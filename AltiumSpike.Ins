@@ -1,0 +1,22 @@
+ClientInsFile 1.0
+
+Server
+    EditorName        = 'AltiumSpike'
+    EditorExePath     = 'AltiumSpike.DLL'
+    EditorDescription = 'Feasibility spike for C# PCB automation (PCBServer / board / iterator).'
+    Version           = 'Version 1.0.0.0'
+    Date              = '21-September-2026'
+    HelpAboutInfo     = 'Internal development spike. Not for distribution.'
+    Copyright         = 'Copyright 2026'
+    Updates           = 'AdvPCB'
+    SystemExtension   = True
+End
+
+Command Name = 'ExportBoardData'  LongSummary = 'Exports footprint sizes, pad nets and board geometry to CSV' End
+Command Name = 'PlaceObjects'      LongSummary = 'Place components/tracks/vias/arcs/fills/text from objects.csv' End
+Command Name = 'PlacePours'        LongSummary = 'Create rectangular polygon pours from pours.csv' End
+Command Name = 'PlaceRegions'      LongSummary = 'Create filled regions from regions.csv' End
+Command Name = 'LockComponents'    LongSummary = 'Lock the components listed in a CSV' End
+Command Name = 'UnlockComponents'  LongSummary = 'Unlock the components listed in a CSV' End
+Command Name = 'ExportJlcBom'      LongSummary = 'Generate JLCPCB/LCSC BOM and CPL files for assembly' End
+Command Name = 'ShowWindow'        LongSummary = 'Open the AltiumSpike window' End

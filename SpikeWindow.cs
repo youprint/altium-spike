@@ -1,0 +1,967 @@
+// SpikeWindow.cs
+//
+// The single AltiumSpike window -- replaces the seven menu items.
+//
+// Built ENTIRELY IN CODE, no .xaml file, on purpose: XAML needs the WPF
+// SDK's markup compiler, which only runs under `UseWPF` with a
+// net8.0-windows target. Deploy.ps1 builds that way, but the sandbox build
+// references Altium's own WPF assemblies against plain net8.0 and has no
+// XAML task. Code-only WPF compiles identically under both.
+//
+// Shown modeless and kept in a static field so it is not collected and so a
+// second invocation re-activates the existing window instead of stacking
+// duplicates.
+
+using DXP;
+using PCB;
+using System;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Shapes;
+
+namespace AltiumSpike
+{
+    public class SpikeWindow : Window
+    {
+        // ---- palette (Windows 11 dark, sitting next to Altium) ----
+        private static readonly Brush Chrome      = Hex("#1F1F1F");
+        private static readonly Brush Surface     = Hex("#272727");
+        private static readonly Brush Card        = Hex("#2F2F2F");
+        private static readonly Brush CardBorder  = Hex("#3C3C3C");
+        private static readonly Brush Field       = Hex("#232323");
+        private static readonly Brush FieldBorder = Hex("#454545");
+        private static readonly Brush Btn         = Hex("#3A3A3A");
+        private static readonly Brush BtnBorder   = Hex("#4A4A4A");
+        private static readonly Brush BtnStrong   = Hex("#464646");
+        private static readonly Brush Accent      = Hex("#2F6FBE");
+        private static readonly Brush AccentEdge  = Hex("#3F83D6");
+        private static readonly Brush TextPrimary = Hex("#ECECEC");
+        private static readonly Brush TextDim     = Hex("#A8A8A8");
+        private static readonly Brush TextFaint   = Hex("#8A8A8A");
+        private static readonly Brush Green       = Hex("#5FD19A");
+        private static readonly Brush Amber       = Hex("#E8A33D");
+        private static readonly Brush Red         = Hex("#E86C6C");
+        private static readonly Brush Divider     = Hex("#3A3A3A");
+
+        private static Brush Hex(string s)
+        {
+            SolidColorBrush b = new SolidColorBrush((Color)ColorConverter.ConvertFromString(s));
+            b.Freeze();
+            return b;
+        }
+
+        private static readonly FontFamily UiFont = new FontFamily("Segoe UI");
+        private static readonly FontFamily MonoFont = new FontFamily("Consolas");
+
+        // ---- showing the window ----
+        //
+        // Modeless (Show), so Altium stays usable with the window open.
+        //
+        // A note for anyone who sees the window stop responding: during remote
+        // testing, synthetic clicks injected into this window stopped landing
+        // after the first couple of actions, and ShowDialog did not help --
+        // but a person clicking the same buttons had no trouble. The symptom
+        // was almost certainly the test harness failing to give a second
+        // top-level window inside Altium's process foreground activation,
+        // rather than a defect here. If a REAL user ever sees buttons stop
+        // firing while the window still repaints, that changes the diagnosis:
+        // it would mean Altium's Delphi message loop is not pumping the WPF
+        // Dispatcher for this window, and the fix is a dedicated STA thread
+        // running Dispatcher.Run with every SDK call marshalled back to
+        // Altium's own thread.
+
+        private static SpikeWindow current;
+
+        public static void ShowSingleton(IClient client)
+        {
+            try
+            {
+                if (current != null && current.IsLoaded)
+                {
+                    if (current.WindowState == WindowState.Minimized)
+                        current.WindowState = WindowState.Normal;
+                    current.Activate();
+                    current.RefreshBoard();
+                    Log.Write("SpikeWindow re-activated");
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow.ShowSingleton/reactivate", ex);
+                current = null;
+            }
+
+            SpikeWindow w = new SpikeWindow(client);
+            current = w;
+            w.Closed += delegate { current = null; Log.Write("SpikeWindow closed"); };
+            w.Show();
+            w.Activate();
+            Log.Write("SpikeWindow shown");
+        }
+
+        // ---- state ----
+        private readonly IClient client;
+
+        private TextBlock docName, docStats, statusText;
+        private Ellipse statusDot;
+        private TextBox outputFolderBox;
+        private Border resultsCard;
+        private StackPanel resultsBody;
+        private TextBlock resultsTitle;
+
+        private string objectsCsv, poursCsv, regionsCsv;
+        private TextBlock objectsPath, poursPath, regionsPath;
+        private Button objectsPlace, poursPlace, regionsPlace;
+
+        private SpikeWindow(IClient client)
+        {
+            this.client = client;
+
+            Title = "AltiumSpike";
+            Width = 900;
+            Height = 700;
+            MinWidth = 760;
+            MinHeight = 520;
+            WindowStyle = WindowStyle.None;
+            ResizeMode = ResizeMode.CanResize;
+            WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            Background = Surface;
+            Foreground = TextPrimary;
+            FontFamily = UiFont;
+            BorderBrush = Hex("#0F0F0F");
+            BorderThickness = new Thickness(1);
+
+            Grid root = new Grid();
+            root.RowDefinitions.Add(Row(GridLength.Auto));   // title bar
+            root.RowDefinitions.Add(Row(new GridLength(1, GridUnitType.Star)));
+            root.RowDefinitions.Add(Row(GridLength.Auto));   // status bar
+
+            root.Children.Add(At(BuildTitleBar(), 0));
+            root.Children.Add(At(BuildContent(), 1));
+            root.Children.Add(At(BuildStatusBar(), 2));
+
+            Content = root;
+
+            Loaded += delegate { RefreshBoard(); };
+        }
+
+        private static RowDefinition Row(GridLength h)
+        {
+            RowDefinition r = new RowDefinition();
+            r.Height = h;
+            return r;
+        }
+
+        private static UIElement At(UIElement e, int row)
+        {
+            Grid.SetRow(e, row);
+            return e;
+        }
+
+        // =============================================================
+        // title bar
+        // =============================================================
+        private UIElement BuildTitleBar()
+        {
+            Border bar = new Border();
+            bar.Background = Chrome;
+            bar.Height = 36;
+
+            DockPanel dp = new DockPanel();
+            dp.LastChildFill = true;
+
+            StackPanel buttons = new StackPanel();
+            buttons.Orientation = Orientation.Horizontal;
+            DockPanel.SetDock(buttons, Dock.Right);
+
+            buttons.Children.Add(ChromeButton("", delegate { WindowState = WindowState.Minimized; }, "Minimize"));
+            buttons.Children.Add(ChromeButton("", delegate
+            {
+                WindowState = (WindowState == WindowState.Maximized) ? WindowState.Normal : WindowState.Maximized;
+            }, "Maximize"));
+            buttons.Children.Add(ChromeButton("", delegate { Close(); }, "Close"));
+
+            StackPanel left = new StackPanel();
+            left.Orientation = Orientation.Horizontal;
+            left.VerticalAlignment = VerticalAlignment.Center;
+            left.Margin = new Thickness(14, 0, 0, 0);
+
+            Border mark = new Border();
+            mark.Width = 13; mark.Height = 13;
+            mark.BorderBrush = Amber;
+            mark.BorderThickness = new Thickness(2);
+            mark.CornerRadius = new CornerRadius(3);
+            mark.VerticalAlignment = VerticalAlignment.Center;
+            left.Children.Add(mark);
+
+            left.Children.Add(Text("AltiumSpike", 12, TextPrimary, FontWeights.SemiBold, new Thickness(9, 0, 0, 0)));
+            left.Children.Add(Text("1.0", 11, TextFaint, FontWeights.Normal, new Thickness(8, 0, 0, 0)));
+
+            dp.Children.Add(buttons);
+            dp.Children.Add(left);
+            bar.Child = dp;
+
+            bar.MouseLeftButtonDown += delegate (object s, MouseButtonEventArgs e)
+            {
+                try
+                {
+                    if (e.ClickCount == 2)
+                        WindowState = (WindowState == WindowState.Maximized) ? WindowState.Normal : WindowState.Maximized;
+                    else
+                        DragMove();
+                }
+                catch { /* DragMove throws if the button was already released */ }
+            };
+
+            return bar;
+        }
+
+        private Button ChromeButton(string glyph, Action onClick, string name)
+        {
+            Button b = new Button();
+            b.Width = 46;
+            b.Height = 36;
+            b.Content = glyph;
+            b.FontFamily = new FontFamily("Segoe MDL2 Assets");
+            b.FontSize = 10;
+            b.Foreground = Hex("#C4C4C4");
+            b.Background = Brushes.Transparent;
+            b.BorderThickness = new Thickness(0);
+            b.Cursor = Cursors.Arrow;
+            b.Focusable = false;
+            AutomationName(b, name);
+            b.Click += delegate { onClick(); };
+            return b;
+        }
+
+        private static void AutomationName(DependencyObject o, string name)
+        {
+            System.Windows.Automation.AutomationProperties.SetName(o, name);
+        }
+
+        // =============================================================
+        // content
+        // =============================================================
+        private UIElement BuildContent()
+        {
+            Grid g = new Grid();
+            g.Margin = new Thickness(20, 18, 20, 18);
+            g.RowDefinitions.Add(Row(GridLength.Auto));                          // board header
+            g.RowDefinitions.Add(Row(GridLength.Auto));                          // results
+            g.RowDefinitions.Add(Row(new GridLength(1, GridUnitType.Star)));     // columns
+
+            g.Children.Add(At(BuildBoardHeader(), 0));
+            g.Children.Add(At(BuildResultsCard(), 1));
+            g.Children.Add(At(BuildColumns(), 2));
+            return g;
+        }
+
+        private UIElement BuildBoardHeader()
+        {
+            Border card = CardBorderEl(new Thickness(16, 13, 16, 13));
+            card.Margin = new Thickness(0, 0, 0, 15);
+
+            DockPanel dp = new DockPanel();
+            dp.LastChildFill = true;
+
+            Button refresh = SecondaryButton("Refresh", 30, 12);
+            refresh.Click += delegate { RefreshBoard(); };
+            DockPanel.SetDock(refresh, Dock.Right);
+            dp.Children.Add(refresh);
+
+            Border icon = new Border();
+            icon.Width = 38; icon.Height = 38;
+            icon.CornerRadius = new CornerRadius(6);
+            icon.Background = Hex("#22382C");
+            icon.Margin = new Thickness(0, 0, 14, 0);
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            Border inner = new Border();
+            inner.Width = 16; inner.Height = 16;
+            inner.BorderBrush = Green;
+            inner.BorderThickness = new Thickness(2);
+            inner.CornerRadius = new CornerRadius(2);
+            icon.Child = inner;
+            DockPanel.SetDock(icon, Dock.Left);
+            dp.Children.Add(icon);
+
+            StackPanel sp = new StackPanel();
+            sp.VerticalAlignment = VerticalAlignment.Center;
+            docName = Text("No PCB document", 14, TextPrimary, FontWeights.SemiBold, new Thickness(0));
+            docName.TextTrimming = TextTrimming.CharacterEllipsis;
+            docStats = Text("Open a .PcbDoc and press Refresh", 12, TextDim, FontWeights.Normal, new Thickness(0, 3, 0, 0));
+            sp.Children.Add(docName);
+            sp.Children.Add(docStats);
+            dp.Children.Add(sp);
+
+            card.Child = dp;
+            return card;
+        }
+
+        private UIElement BuildResultsCard()
+        {
+            resultsCard = CardBorderEl(new Thickness(15, 12, 15, 12));
+            resultsCard.Margin = new Thickness(0, 0, 0, 15);
+            resultsCard.Visibility = Visibility.Collapsed;
+
+            StackPanel sp = new StackPanel();
+
+            DockPanel head = new DockPanel();
+            head.LastChildFill = true;
+            Button dismiss = new Button();
+            dismiss.Content = "Dismiss";
+            dismiss.FontSize = 11;
+            dismiss.Foreground = TextDim;
+            dismiss.Background = Brushes.Transparent;
+            dismiss.BorderThickness = new Thickness(0);
+            dismiss.Cursor = Cursors.Hand;
+            dismiss.Click += delegate { resultsCard.Visibility = Visibility.Collapsed; };
+            DockPanel.SetDock(dismiss, Dock.Right);
+            head.Children.Add(dismiss);
+
+            resultsTitle = Text("", 12, TextPrimary, FontWeights.Bold, new Thickness(0));
+            head.Children.Add(resultsTitle);
+            sp.Children.Add(head);
+
+            // A long exclusion list must not push the columns off the bottom of
+            // the window -- it did on the first run, clipping the output folder
+            // row. Cap the height and let this one area scroll.
+            resultsBody = new StackPanel();
+            ScrollViewer sv = new ScrollViewer();
+            sv.MaxHeight = 110;
+            sv.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+            sv.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            sv.Margin = new Thickness(0, 8, 0, 0);
+            sv.Content = resultsBody;
+            sp.Children.Add(sv);
+
+            resultsCard.Child = sp;
+            return resultsCard;
+        }
+
+        private UIElement BuildColumns()
+        {
+            Grid g = new Grid();
+            g.ColumnDefinitions.Add(Col());
+            g.ColumnDefinitions.Add(ColFixed(16));
+            g.ColumnDefinitions.Add(Col());
+
+            UIElement left = BuildExportColumn();
+            Grid.SetColumn(left, 0);
+            g.Children.Add(left);
+
+            UIElement right = BuildImportColumn();
+            Grid.SetColumn(right, 2);
+            g.Children.Add(right);
+            return g;
+        }
+
+        private static ColumnDefinition Col()
+        {
+            ColumnDefinition c = new ColumnDefinition();
+            c.Width = new GridLength(1, GridUnitType.Star);
+            return c;
+        }
+
+        private static ColumnDefinition ColFixed(double w)
+        {
+            ColumnDefinition c = new ColumnDefinition();
+            c.Width = new GridLength(w);
+            return c;
+        }
+
+        // ---------------- export ----------------
+        private UIElement BuildExportColumn()
+        {
+            DockPanel dp = new DockPanel();
+            dp.LastChildFill = false;
+
+            StackPanel top = new StackPanel();
+            DockPanel.SetDock(top, Dock.Top);
+
+            top.Children.Add(SectionHeader("EXPORT"));
+
+            // board data
+            Border c1 = CardBorderEl(new Thickness(15, 14, 15, 14));
+            c1.Margin = new Thickness(0, 0, 0, 10);
+            StackPanel s1 = new StackPanel();
+            s1.Children.Add(Text("Board data", 13, TextPrimary, FontWeights.SemiBold, new Thickness(0)));
+            s1.Children.Add(Wrap("footprint_sizes · pad_nets · board_geometry", 12, TextDim, new Thickness(0, 6, 0, 0)));
+            Button bExport = PrimaryButton("Export board data", 34);
+            bExport.Margin = new Thickness(0, 12, 0, 0);
+            bExport.Click += delegate { DoExportBoardData(); };
+            s1.Children.Add(bExport);
+            c1.Child = s1;
+            top.Children.Add(c1);
+
+            // jlcpcb
+            Border c2 = CardBorderEl(new Thickness(15, 14, 15, 14));
+            StackPanel s2 = new StackPanel();
+            StackPanel titleRow = new StackPanel();
+            titleRow.Orientation = Orientation.Horizontal;
+            titleRow.Children.Add(Text("JLCPCB assembly", 13, TextPrimary, FontWeights.SemiBold, new Thickness(0)));
+            Border tag = new Border();
+            tag.Background = Hex("#3D3527");
+            tag.BorderBrush = Hex("#5F5130");
+            tag.BorderThickness = new Thickness(1);
+            tag.CornerRadius = new CornerRadius(3);
+            tag.Padding = new Thickness(6, 2, 6, 2);
+            tag.Margin = new Thickness(8, 0, 0, 0);
+            tag.VerticalAlignment = VerticalAlignment.Center;
+            tag.Child = Text("BOM + CPL", 10, Hex("#F0C477"), FontWeights.Bold, new Thickness(0));
+            titleRow.Children.Add(tag);
+            s2.Children.Add(titleRow);
+            s2.Children.Add(Wrap("BOM, pick-and-place and a private missing-parts list", 12, TextDim, new Thickness(0, 6, 0, 0)));
+            Button bJlc = PrimaryButton("Export for JLCPCB", 34);
+            bJlc.Margin = new Thickness(0, 12, 0, 0);
+            bJlc.Click += delegate { DoExportJlc(); };
+            s2.Children.Add(bJlc);
+            c2.Child = s2;
+            top.Children.Add(c2);
+
+            dp.Children.Add(top);
+
+            // output folder pinned to the bottom
+            StackPanel bottom = new StackPanel();
+            DockPanel.SetDock(bottom, Dock.Bottom);
+            bottom.Children.Add(Text("Output folder", 12, TextDim, FontWeights.Normal, new Thickness(0, 0, 0, 6)));
+
+            DockPanel row = new DockPanel();
+            row.LastChildFill = true;
+            Button browse = SecondaryButton("Browse", 32, 12);
+            browse.Margin = new Thickness(7, 0, 0, 0);
+            browse.Click += delegate { DoBrowseOutput(); };
+            DockPanel.SetDock(browse, Dock.Right);
+            row.Children.Add(browse);
+
+            outputFolderBox = new TextBox();
+            outputFolderBox.Height = 32;
+            outputFolderBox.FontFamily = MonoFont;
+            outputFolderBox.FontSize = 12;
+            outputFolderBox.Foreground = Hex("#DCDCDC");
+            outputFolderBox.Background = Field;
+            outputFolderBox.BorderBrush = FieldBorder;
+            outputFolderBox.BorderThickness = new Thickness(1);
+            outputFolderBox.Padding = new Thickness(8, 0, 8, 0);
+            outputFolderBox.VerticalContentAlignment = VerticalAlignment.Center;
+            outputFolderBox.CaretBrush = TextPrimary;
+            AutomationName(outputFolderBox, "Output folder");
+            row.Children.Add(outputFolderBox);
+
+            bottom.Children.Add(row);
+            dp.Children.Add(bottom);
+
+            return dp;
+        }
+
+        // ---------------- import ----------------
+        private UIElement BuildImportColumn()
+        {
+            StackPanel sp = new StackPanel();
+
+            sp.Children.Add(SectionHeader("IMPORT"));
+
+            Border card = CardBorderEl(new Thickness(5, 5, 5, 5));
+            StackPanel rows = new StackPanel();
+
+            rows.Children.Add(ImportRow("Objects", "objects.csv",
+                delegate (string p) { objectsCsv = p; }, out objectsPath, out objectsPlace,
+                delegate { DoPlace("Place Objects", objectsCsv, BoardImport.PlaceObjects, "object(s)"); }));
+            rows.Children.Add(RowDivider());
+            rows.Children.Add(ImportRow("Polygon pours", "pours.csv",
+                delegate (string p) { poursCsv = p; }, out poursPath, out poursPlace,
+                delegate { DoPlace("Place Polygon Pours", poursCsv, BoardImport.PlacePours, "pour(s)"); }));
+            rows.Children.Add(RowDivider());
+            rows.Children.Add(ImportRow("Regions", "regions.csv",
+                delegate (string p) { regionsCsv = p; }, out regionsPath, out regionsPlace,
+                delegate { DoPlace("Place Regions", regionsCsv, BoardImport.PlaceRegions, "region(s)"); }));
+
+            card.Child = rows;
+            sp.Children.Add(card);
+
+            sp.Children.Add(SectionHeader("COMPONENT LOCK"));
+
+            Border lockCard = CardBorderEl(new Thickness(15, 13, 15, 13));
+            StackPanel ls = new StackPanel();
+            ls.Children.Add(Wrap("From a CSV of designators, one per line.", 12, TextDim, new Thickness(0, 0, 0, 10)));
+            Grid lg = new Grid();
+            lg.ColumnDefinitions.Add(Col());
+            lg.ColumnDefinitions.Add(ColFixed(8));
+            lg.ColumnDefinitions.Add(Col());
+
+            Button bLock = SecondaryButton("Lock…", 32, 12);
+            bLock.Click += delegate { DoLock(true); };
+            Grid.SetColumn(bLock, 0);
+            lg.Children.Add(bLock);
+
+            Button bUnlock = SecondaryButton("Unlock…", 32, 12);
+            bUnlock.Click += delegate { DoLock(false); };
+            Grid.SetColumn(bUnlock, 2);
+            lg.Children.Add(bUnlock);
+
+            ls.Children.Add(lg);
+            lockCard.Child = ls;
+            sp.Children.Add(lockCard);
+
+            return sp;
+        }
+
+        private UIElement RowDivider()
+        {
+            Border d = new Border();
+            d.Height = 1;
+            d.Background = CardBorder;
+            d.Margin = new Thickness(10, 0, 10, 0);
+            return d;
+        }
+
+        private UIElement ImportRow(string label, string suggested, Action<string> setPath,
+                                    out TextBlock pathText, out Button placeButton, Action onPlace)
+        {
+            DockPanel dp = new DockPanel();
+            dp.LastChildFill = true;
+            dp.Margin = new Thickness(10, 10, 10, 10);
+
+            Button place = new Button();
+            place.Content = "Place";
+            place.Height = 30;
+            place.MinWidth = 66;
+            place.FontSize = 12;
+            place.FontWeight = FontWeights.SemiBold;
+            place.Foreground = Hex("#6E6E6E");
+            place.Background = Hex("#333333");
+            place.BorderBrush = Hex("#414141");
+            place.BorderThickness = new Thickness(1);
+            place.IsEnabled = false;
+            place.Margin = new Thickness(9, 0, 0, 0);
+            place.Click += delegate { onPlace(); };
+            DockPanel.SetDock(place, Dock.Right);
+            dp.Children.Add(place);
+            placeButton = place;
+
+            TextBlock pt = Text("no file selected", 11, Hex("#7A7A7A"), FontWeights.Normal, new Thickness(0, 3, 0, 0));
+            pt.FontFamily = MonoFont;
+            pt.TextTrimming = TextTrimming.CharacterEllipsis;
+            pathText = pt;
+
+            Button pick = SecondaryButton("…", 30, 12);
+            pick.MinWidth = 32;
+            pick.Margin = new Thickness(9, 0, 0, 0);
+            AutomationName(pick, "Choose " + label + " file");
+            Button placeRef = place;
+            TextBlock ptRef = pt;
+            pick.Click += delegate
+            {
+                string chosen = CsvIo.PickCsv("Choose " + label + " CSV", suggested);
+                if (chosen == null) return;
+                setPath(chosen);
+                ptRef.Text = System.IO.Path.GetFileName(chosen);
+                ptRef.Foreground = Hex("#6CB6FF");
+                ptRef.ToolTip = chosen;
+                placeRef.IsEnabled = true;
+                placeRef.Foreground = TextPrimary;
+                placeRef.Background = BtnStrong;
+                placeRef.BorderBrush = Hex("#585858");
+            };
+            DockPanel.SetDock(pick, Dock.Right);
+            dp.Children.Add(pick);
+
+            StackPanel sp = new StackPanel();
+            sp.VerticalAlignment = VerticalAlignment.Center;
+            sp.Children.Add(Text(label, 13, TextPrimary, FontWeights.SemiBold, new Thickness(0)));
+            sp.Children.Add(pt);
+            dp.Children.Add(sp);
+
+            return dp;
+        }
+
+        // =============================================================
+        // status bar
+        // =============================================================
+        private UIElement BuildStatusBar()
+        {
+            Border bar = new Border();
+            bar.Background = Chrome;
+            bar.BorderBrush = Hex("#101010");
+            bar.BorderThickness = new Thickness(0, 1, 0, 0);
+            bar.Height = 30;
+
+            DockPanel dp = new DockPanel();
+            dp.LastChildFill = true;
+            dp.Margin = new Thickness(14, 0, 14, 0);
+
+            statusDot = new Ellipse();
+            statusDot.Width = 7; statusDot.Height = 7;
+            statusDot.Fill = Green;
+            statusDot.VerticalAlignment = VerticalAlignment.Center;
+            statusDot.Margin = new Thickness(0, 0, 9, 0);
+            DockPanel.SetDock(statusDot, Dock.Left);
+            dp.Children.Add(statusDot);
+
+            statusText = Text("Ready", 11, TextDim, FontWeights.Normal, new Thickness(0));
+            statusText.VerticalAlignment = VerticalAlignment.Center;
+            statusText.TextTrimming = TextTrimming.CharacterEllipsis;
+            dp.Children.Add(statusText);
+
+            bar.Child = dp;
+            return bar;
+        }
+
+        // =============================================================
+        // shared element builders
+        // =============================================================
+        private static TextBlock Text(string s, double size, Brush fg, FontWeight weight, Thickness margin)
+        {
+            TextBlock t = new TextBlock();
+            t.Text = s;
+            t.FontSize = size;
+            t.Foreground = fg;
+            t.FontWeight = weight;
+            t.Margin = margin;
+            t.FontFamily = UiFont;
+            return t;
+        }
+
+        private static TextBlock Wrap(string s, double size, Brush fg, Thickness margin)
+        {
+            TextBlock t = Text(s, size, fg, FontWeights.Normal, margin);
+            t.TextWrapping = TextWrapping.Wrap;
+            t.LineHeight = size * 1.5;
+            return t;
+        }
+
+        private static Border CardBorderEl(Thickness padding)
+        {
+            Border b = new Border();
+            b.Background = Card;
+            b.BorderBrush = CardBorder;
+            b.BorderThickness = new Thickness(1);
+            b.CornerRadius = new CornerRadius(6);
+            b.Padding = padding;
+            return b;
+        }
+
+        private UIElement SectionHeader(string label)
+        {
+            DockPanel dp = new DockPanel();
+            dp.LastChildFill = true;
+            dp.Margin = new Thickness(0, 0, 0, 10);
+
+            TextBlock t = Text(label, 11, Hex("#9E9E9E"), FontWeights.Bold, new Thickness(0, 0, 9, 0));
+            t.VerticalAlignment = VerticalAlignment.Center;
+            DockPanel.SetDock(t, Dock.Left);
+            dp.Children.Add(t);
+
+            Border line = new Border();
+            line.Height = 1;
+            line.Background = Divider;
+            line.VerticalAlignment = VerticalAlignment.Center;
+            dp.Children.Add(line);
+
+            return dp;
+        }
+
+        private static Button PrimaryButton(string label, double height)
+        {
+            Button b = new Button();
+            b.Content = label;
+            b.Height = height;
+            b.FontSize = 12;
+            b.FontWeight = FontWeights.SemiBold;
+            b.Foreground = Brushes.White;
+            b.Background = Accent;
+            b.BorderBrush = AccentEdge;
+            b.BorderThickness = new Thickness(1);
+            b.Cursor = Cursors.Hand;
+            return b;
+        }
+
+        private static Button SecondaryButton(string label, double height, double size)
+        {
+            Button b = new Button();
+            b.Content = label;
+            b.Height = height;
+            b.MinWidth = 64;
+            b.Padding = new Thickness(13, 0, 13, 0);
+            b.FontSize = size;
+            b.Foreground = Hex("#DCDCDC");
+            b.Background = Btn;
+            b.BorderBrush = BtnBorder;
+            b.BorderThickness = new Thickness(1);
+            b.Cursor = Cursors.Hand;
+            return b;
+        }
+
+        // =============================================================
+        // board access + actions
+        // =============================================================
+        private bool TryGetBoard(out IPCB_ServerInterface pcbServer, out IPCB_Board board)
+        {
+            pcbServer = null;
+            board = null;
+            try
+            {
+                client.StartServer("PCB");
+                pcbServer = client.GetServerModuleByName("PCB") as IPCB_ServerInterface;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow/PCBServer", ex);
+                return false;
+            }
+            if (pcbServer == null) return false;
+            board = pcbServer.GetCurrentPCBBoard();
+            return board != null;
+        }
+
+        public void RefreshBoard()
+        {
+            try
+            {
+                string folder = Settings.GetOutputFolder();
+                if (folder != null && outputFolderBox != null) outputFolderBox.Text = folder;
+
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetBoard(out pcbServer, out board))
+                {
+                    docName.Text = "No PCB document";
+                    docStats.Text = "Open a .PcbDoc and press Refresh";
+                    SetStatus("No active PCB document", Amber);
+                    return;
+                }
+
+                string file = "PCB document";
+                try { file = System.IO.Path.GetFileName(board.GetState_FileName() ?? "") ; } catch { }
+                if (string.IsNullOrEmpty(file)) file = "PCB document";
+                docName.Text = file;
+
+                int total = 0, locked = 0;
+                IPCB_BoardIterator it = board.BoardIterator_Create();
+                try
+                {
+                    it.AddFilter_ObjectSet(new TObjectSet(TObjectId.eComponentObject));
+                    it.AddFilter_AllLayers();
+                    it.AddFilter_Method(TIterationMethod.eProcessAll);
+                    IPCB_Component c = it.FirstPCBObject() as IPCB_Component;
+                    while (c != null)
+                    {
+                        total++;
+                        try { if (!c.GetState_Moveable()) locked++; } catch { }
+                        c = it.NextPCBObject() as IPCB_Component;
+                    }
+                }
+                finally { board.BoardIterator_Destroy(ref it); }
+
+                string size = "";
+                try
+                {
+                    IPCB_BoardOutline o = board.GetState_BoardOutline();
+                    int n = o.GetState_PointCount();
+                    if (n > 0)
+                    {
+                        double minx = double.MaxValue, maxx = double.MinValue, miny = double.MaxValue, maxy = double.MinValue;
+                        for (int i = 0; i < n; i++)
+                        {
+                            PolySegment s = o.GetState_Segments(i);
+                            double x = EDP.Utils.CoordToMMs(s.Vx), y = EDP.Utils.CoordToMMs(s.Vy);
+                            if (x < minx) minx = x; if (x > maxx) maxx = x;
+                            if (y < miny) miny = y; if (y > maxy) maxy = y;
+                        }
+                        size = " · " + (maxx - minx).ToString("0.#") + " × " + (maxy - miny).ToString("0.#") + " mm";
+                    }
+                }
+                catch { }
+
+                string layers = "";
+                try { layers = " · " + board.GetState_LayerStack_V7().SignalLayerCount() + " layers"; } catch { }
+
+                docStats.Text = total + " components" + size + layers + " · " + locked + " locked";
+                SetStatus("Ready", Green);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow.RefreshBoard", ex);
+                SetStatus("Could not read the board: " + ex.Message, Red);
+            }
+        }
+
+        private void SetStatus(string message, Brush colour)
+        {
+            if (statusText == null) return;
+            statusText.Text = message;
+            statusDot.Fill = colour;
+            Log.Write("SpikeWindow status: " + message);
+        }
+
+        private void ShowResult(string title, Brush accent, params string[] lines)
+        {
+            resultsTitle.Text = title;
+            resultsTitle.Foreground = accent;
+            resultsBody.Children.Clear();
+            foreach (string line in lines)
+            {
+                if (line == null) continue;
+                resultsBody.Children.Add(Wrap(line, 12, TextDim, new Thickness(0, 0, 0, 4)));
+            }
+            resultsCard.Visibility = Visibility.Visible;
+        }
+
+        private void DoBrowseOutput()
+        {
+            string chosen = Settings.PickOutputFolder("Choose a folder for the exported files");
+            if (chosen == null) return;
+            Settings.SetOutputFolder(chosen);
+            outputFolderBox.Text = chosen;
+            SetStatus("Output folder set to " + chosen, Green);
+        }
+
+        private string EnsureOutputFolder()
+        {
+            string folder = (outputFolderBox.Text ?? "").Trim();
+            if (folder.Length > 0 && System.IO.Directory.Exists(folder))
+            {
+                Settings.SetOutputFolder(folder);
+                return folder;
+            }
+            folder = Settings.ResolveOutputFolder();
+            if (folder != null) outputFolderBox.Text = folder;
+            return folder;
+        }
+
+        private void DoExportBoardData()
+        {
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetBoard(out pcbServer, out board))
+                {
+                    SetStatus("No active PCB document", Amber);
+                    return;
+                }
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                int f = BoardExport.FootprintSizes(board, folder);
+                int p = BoardExport.PadNets(board, folder);
+                int g = BoardExport.BoardGeometry(board, folder);
+
+                ShowResult("Board data exported", Green,
+                    "footprint_sizes.csv — " + f + " components",
+                    "pad_nets.csv — " + p + " pads",
+                    "board_geometry.csv — " + g + " rows",
+                    folder);
+                SetStatus("3 files written to " + folder, Green);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow.DoExportBoardData", ex);
+                ShowResult("Export failed", Red, ex.GetType().Name + " — " + ex.Message);
+                SetStatus("Export failed", Red);
+            }
+        }
+
+        private void DoExportJlc()
+        {
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetBoard(out pcbServer, out board))
+                {
+                    SetStatus("No active PCB document", Amber);
+                    return;
+                }
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                JlcExport.JlcResult r = JlcExport.Export(pcbServer, board, folder);
+
+                string excluded = r.MissingLcsc.Count == 0
+                    ? "Nothing excluded — every component has an LCSC number."
+                    : r.MissingLcsc.Count + " excluded (no LCSC number): " + string.Join(", ", r.MissingLcsc.ToArray());
+
+                ShowResult("JLCPCB export complete", Green,
+                    "bom_jlcpcb.csv — " + r.Parts + " distinct parts",
+                    "cpl_jlcpcb.csv — " + r.Placements + " placements",
+                    excluded,
+                    r.MissingLcsc.Count > 0 ? "Listed in bom_missing_lcsc.csv — they are in neither deliverable." : null);
+                SetStatus("Written to " + folder, Green);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow.DoExportJlc", ex);
+                ShowResult("JLCPCB export failed", Red, ex.GetType().Name + " — " + ex.Message);
+                SetStatus("Export failed", Red);
+            }
+        }
+
+        private void DoPlace(string what, string csv,
+                             Func<IPCB_ServerInterface, IPCB_Board, string, BoardImport.Result> action,
+                             string noun)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(csv)) { SetStatus("Choose a CSV first", Amber); return; }
+
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetBoard(out pcbServer, out board))
+                {
+                    SetStatus("No active PCB document", Amber);
+                    return;
+                }
+
+                BoardImport.Result r = action(pcbServer, board, csv);
+
+                Brush tone = (r.Errors.Count > 0 || r.Missing.Count > 0) ? Amber : Green;
+                ShowResult(what + " — " + r.Placed + " " + noun, tone,
+                    r.Missing.Count > 0 ? "Not found (" + r.Missing.Count + "): " + string.Join(", ", r.Missing.ToArray()) : null,
+                    r.Errors.Count > 0 ? "Row errors (" + r.Errors.Count + "): " + string.Join("; ", r.Errors.ToArray()) : null,
+                    (r.Missing.Count == 0 && r.Errors.Count == 0) ? "No errors." : null);
+                SetStatus(what + ": " + r.Placed + " " + noun, tone);
+                RefreshBoard();
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow." + what, ex);
+                ShowResult(what + " failed", Red, ex.GetType().Name + " — " + ex.Message);
+                SetStatus(what + " failed", Red);
+            }
+        }
+
+        private void DoLock(bool locked)
+        {
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetBoard(out pcbServer, out board))
+                {
+                    SetStatus("No active PCB document", Amber);
+                    return;
+                }
+
+                string csv = CsvIo.PickCsv(locked ? "Lock components" : "Unlock components", "locked_components.csv");
+                if (csv == null) { SetStatus("Cancelled", TextDim); return; }
+
+                BoardImport.Result r = BoardImport.SetLock(pcbServer, board, csv, locked);
+                string verb = locked ? "locked" : "unlocked";
+
+                ShowResult(r.Placed + " components " + verb, r.Missing.Count > 0 ? Amber : Green,
+                    r.Missing.Count > 0 ? "Not found (" + r.Missing.Count + "): " + string.Join(", ", r.Missing.ToArray()) : "No errors.");
+                SetStatus(r.Placed + " components " + verb, Green);
+                RefreshBoard();
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow.DoLock", ex);
+                ShowResult("Lock failed", Red, ex.GetType().Name + " — " + ex.Message);
+                SetStatus("Lock failed", Red);
+            }
+        }
+    }
+}

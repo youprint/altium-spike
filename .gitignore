@@ -1,0 +1,19 @@
+# Build output
+bin/
+obj/
+
+# Altium's SDK assemblies are proprietary and must NOT be committed.
+# Copy them from your own Altium installation — see the README.
+Assemblies/
+
+# Local artefacts
+*.user
+*.suo
+*.bak
+*.log
+AltiumSpike.log
+
+# Editors
+.vs/
+.vscode/
+.idea/

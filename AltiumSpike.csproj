@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <OutputType>Library</OutputType>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>AltiumSpike</RootNamespace>
+    <AssemblyName>AltiumSpike</AssemblyName>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!--
+    Altium's SDK assemblies are proprietary and are NOT redistributed with
+    this project. Copy these two files out of your own Altium installation
+    into an `Assemblies` folder beside this .csproj before building:
+
+        <Altium install>\System\Altium.SDK.dll
+        <Altium install>\System\Altium.SDK.Interfaces.dll
+
+    The install folder is usually C:\Program Files\Altium\AD<nn>, where
+    <nn> is the version the installer FIRST created -- Altium keeps that
+    folder name across upgrades, so a current Altium 26 may well live in a
+    folder called AD22. Check the actual path rather than assuming.
+
+    Altium.Controls.dll is deliberately not referenced: nothing here uses
+    it, and the WPF UI is built from plain framework controls.
+  -->
+  <ItemGroup>
+    <Reference Include="Altium.SDK">
+      <HintPath>Assemblies\Altium.SDK.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Altium.SDK.Interfaces">
+      <HintPath>Assemblies\Altium.SDK.Interfaces.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

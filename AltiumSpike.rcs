@@ -1,0 +1,17 @@
+PL 
+    AltiumSpike:ShowWindow
+	Command='AltiumSpike:ShowWindow'
+	Caption='AltiumSpike...'
+	Image=''
+	Shortcut1=''
+	Shortcut2=''
+	Params=''
+	Description='Open the AltiumSpike window: export, import, JLCPCB and component lock'
+End
+
+Insertion _User60 TargetID='MNPCB_Tools10' RefID0='PcbDoc_Tools' 
+    Link _User61 PLID='AltiumSpike:ShowWindow'      End
+End
+Insertion _User62 TargetID='MNPCBMenu' InsertType='After' RefID0='MNPCB_Help10' 
+    Link _User63 PLID='AltiumSpike:ShowWindow'      End
+End
