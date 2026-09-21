@@ -109,6 +109,11 @@ namespace AltiumSpike
             Register(launcher, "UnlockComponents", RunUnlock);
             Register(launcher, "AltiumSpike:UnlockComponents", RunUnlock);
 
+            Register(launcher, "ExportNetLengths", RunExportNetLengths);
+            Register(launcher, "AltiumSpike:ExportNetLengths", RunExportNetLengths);
+            Register(launcher, "ViaFence", RunViaFence);
+            Register(launcher, "AltiumSpike:ViaFence", RunViaFence);
+
             Log.Write("InitializeCommands finished");
         }
 
@@ -347,6 +352,115 @@ namespace AltiumSpike
                 Log.Say("Export Board Data", "FAILED: " + ex.GetType().Name + " -- " + ex.Message);
             }
             Log.Write("<<< RunExport returned");
+        }
+
+        // --- shared PCB acquisition for the two high-speed commands ---
+        private bool TryGetPcb(string title, out IPCB_ServerInterface pcbServer, out IPCB_Board board)
+        {
+            pcbServer = null;
+            board = null;
+            try
+            {
+                client.StartServer("PCB");
+                pcbServer = client.GetServerModuleByName("PCB") as IPCB_ServerInterface;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception(title + "/PCBServer", ex);
+                Log.Say(title, "Could not obtain PCBServer: " + ex.Message);
+                return false;
+            }
+
+            if (pcbServer == null) { Log.Say(title, "Could not obtain PCBServer."); return false; }
+
+            board = pcbServer.GetCurrentPCBBoard();
+            if (board == null)
+            {
+                Log.Say(title, "No active PCB document. Open the target PCB and try again.");
+                return false;
+            }
+            return true;
+        }
+
+        // --- ExportNetLengths: per-net and per-pin-pair length and delay ---
+        private void RunExportNetLengths(IServerDocumentView view, ref string parameters)
+        {
+            Log.Write(">>> RunExportNetLengths DISPATCHED");
+            const string title = "Export Net Lengths";
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetPcb(title, out pcbServer, out board)) return;
+
+                string folder = Settings.ResolveOutputFolder();
+                if (folder == null) { Log.Write("RunExportNetLengths: folder selection cancelled"); return; }
+
+                NetLengths.Result res = NetLengths.Export(board, folder);
+
+                string msg = "Exported to " + folder + ":\n" +
+                             "  net_lengths.csv -- " + res.NetRows + " net(s)\n" +
+                             "  pin_pair_lengths.csv -- " + res.PinPairRows + " pin pair(s)";
+                foreach (string n in res.Notes) msg += "\n  note: " + n;
+                Log.Say(title, msg);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("RunExportNetLengths", ex);
+                Log.Say(title, "FAILED: " + ex.GetType().Name + " -- " + ex.Message);
+            }
+            Log.Write("<<< RunExportNetLengths returned");
+        }
+
+        // --- ViaFence: fence the current selection using the REMEMBERED
+        //     parameters from the window.
+        //
+        //     There is deliberately no prompt here. The menu route exists so
+        //     a fence can be repeated on a new selection without reaching for
+        //     the window, which is the common case once pitch and offset are
+        //     settled; anyone who needs to change them opens the window,
+        //     where the fields are. Defaults match FenceOptions so a
+        //     first run before the window has ever been opened still behaves.
+        private void RunViaFence(IServerDocumentView view, ref string parameters)
+        {
+            Log.Write(">>> RunViaFence DISPATCHED");
+            const string title = "Via Fence";
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetPcb(title, out pcbServer, out board)) return;
+
+                FenceOptions opt = new FenceOptions();
+                opt.PitchMM = Num(Settings.GetValue("FencePitch", "1.0"), 1.0);
+                opt.OffsetMM = Num(Settings.GetValue("FenceOffset", "0.5"), 0.5);
+                opt.ViaDiameterMM = Num(Settings.GetValue("FenceDia", "0.6"), 0.6);
+                opt.HoleSizeMM = Num(Settings.GetValue("FenceHole", "0.3"), 0.3);
+                opt.NetName = Settings.GetValue("FenceNet", "GND");
+                opt.LeftSide = Settings.GetValue("FenceLeft", "1") != "0";
+                opt.RightSide = Settings.GetValue("FenceRight", "1") != "0";
+
+                ViaFence.Result r = ViaFence.Fence(pcbServer, board, opt);
+                Log.Say(title, r.Summarise());
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("RunViaFence", ex);
+                Log.Say(title, "FAILED: " + ex.GetType().Name + " -- " + ex.Message);
+            }
+            Log.Write("<<< RunViaFence returned");
+        }
+
+        // Same comma/point tolerance as the window: the settings file holds
+        // whatever the user typed, and this machine's locale is fr-FR.
+        private static double Num(string raw, double fallback)
+        {
+            if (raw == null) return fallback;
+            string s = raw.Trim().Replace(',', '.');
+            double v;
+            if (double.TryParse(s, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out v)) return v;
+            return fallback;
         }
 
     }

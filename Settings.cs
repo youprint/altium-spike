@@ -143,5 +143,54 @@ namespace AltiumSpike
             if (folder != null) SetOutputFolder(folder);
             return folder;
         }
+
+        // ------------------------------------------------------------------
+        // Generic key=value slots, used by the via fence to remember pitch,
+        // offset, via size and net between sessions.
+        //
+        // Retyping four numbers and a net name on every run is the kind of
+        // friction that stops a tool being used, and a fence is something you
+        // redo repeatedly as a layout changes. Values are stored as written
+        // by the user, not parsed, so a malformed entry can be corrected in
+        // the window rather than silently reset here.
+        //
+        // Keys must not contain '=' -- the file is one key=value per line and
+        // the first '=' is the separator.
+        // ------------------------------------------------------------------
+        public static string GetValue(string key, string fallback)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(key) || !File.Exists(SettingsPath)) return fallback;
+                string prefix = key + "=";
+                foreach (string line in File.ReadAllLines(SettingsPath))
+                {
+                    if (line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string v = line.Substring(prefix.Length).Trim();
+                        return v.Length > 0 ? v : fallback;
+                    }
+                }
+            }
+            catch (Exception ex) { Log.Exception("Settings.GetValue(" + key + ")", ex); }
+            return fallback;
+        }
+
+        public static void SetValue(string key, string value)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(key) || key.IndexOf('=') >= 0) return;
+                string prefix = key + "=";
+                List<string> keep = new List<string>();
+                if (File.Exists(SettingsPath))
+                    foreach (string line in File.ReadAllLines(SettingsPath))
+                        if (!line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                            keep.Add(line);
+                keep.Add(prefix + (value ?? ""));
+                File.WriteAllLines(SettingsPath, keep);
+            }
+            catch (Exception ex) { Log.Exception("Settings.SetValue(" + key + ")", ex); }
+        }
     }
 }

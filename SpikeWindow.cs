@@ -15,6 +15,8 @@
 using DXP;
 using PCB;
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -116,15 +118,19 @@ namespace AltiumSpike
         private TextBlock objectsPath, poursPath, regionsPath;
         private Button objectsPlace, poursPlace, regionsPlace;
 
+        // via fence parameters
+        private TextBox fencePitch, fenceOffset, fenceDia, fenceHole, fenceNet;
+        private CheckBox fenceLeft, fenceRight;
+
         private SpikeWindow(IClient client)
         {
             this.client = client;
 
             Title = "AltiumSpike";
             Width = 900;
-            Height = 700;
+            Height = 830;
             MinWidth = 760;
-            MinHeight = 520;
+            MinHeight = 560;
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.CanResize;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -252,10 +258,12 @@ namespace AltiumSpike
             g.RowDefinitions.Add(Row(GridLength.Auto));                          // board header
             g.RowDefinitions.Add(Row(GridLength.Auto));                          // results
             g.RowDefinitions.Add(Row(new GridLength(1, GridUnitType.Star)));     // columns
+            g.RowDefinitions.Add(Row(GridLength.Auto));                          // high-speed tools
 
             g.Children.Add(At(BuildBoardHeader(), 0));
             g.Children.Add(At(BuildResultsCard(), 1));
             g.Children.Add(At(BuildColumns(), 2));
+            g.Children.Add(At(BuildHighSpeedSection(), 3));
             return g;
         }
 
@@ -373,6 +381,164 @@ namespace AltiumSpike
         }
 
         // ---------------- export ----------------
+        // ---------------- high-speed tools ----------------
+        //
+        // These two live in their own full-width strip rather than inside the
+        // Export column, because neither is a plain "write a CSV of the
+        // board" action: the fence MUTATES the board and depends on what is
+        // selected in the editor, and the length export is the only output
+        // whose numbers come from Altium's own calculators rather than from
+        // geometry this plugin measures. Grouping them keeps that distinction
+        // visible instead of burying a board-modifying button between two
+        // read-only exports.
+        private UIElement BuildHighSpeedSection()
+        {
+            StackPanel outer = new StackPanel();
+            outer.Margin = new Thickness(0, 15, 0, 0);
+            outer.Children.Add(SectionHeader("HIGH-SPEED"));
+
+            Grid g = new Grid();
+            g.ColumnDefinitions.Add(Col());
+            g.ColumnDefinitions.Add(ColFixed(16));
+            g.ColumnDefinitions.Add(ColFixed(250));
+
+            UIElement fence = BuildViaFenceCard();
+            Grid.SetColumn(fence, 0);
+            g.Children.Add(fence);
+
+            UIElement lengths = BuildNetLengthsCard();
+            Grid.SetColumn(lengths, 2);
+            g.Children.Add(lengths);
+
+            outer.Children.Add(g);
+            return outer;
+        }
+
+        private UIElement BuildViaFenceCard()
+        {
+            Border card = CardBorderEl(new Thickness(15, 13, 15, 13));
+            StackPanel sp = new StackPanel();
+
+            StackPanel titleRow = new StackPanel();
+            titleRow.Orientation = Orientation.Horizontal;
+            titleRow.Children.Add(Text("Via fence", 13, TextPrimary, FontWeights.SemiBold, new Thickness(0)));
+
+            Border tag = new Border();
+            tag.Background = Hex("#2A3340");
+            tag.BorderBrush = Hex("#3C4A5C");
+            tag.BorderThickness = new Thickness(1);
+            tag.CornerRadius = new CornerRadius(3);
+            tag.Padding = new Thickness(6, 2, 6, 2);
+            tag.Margin = new Thickness(8, 0, 0, 0);
+            tag.VerticalAlignment = VerticalAlignment.Center;
+            tag.Child = Text("USES SELECTION", 10, Hex("#8FB4DC"), FontWeights.Bold, new Thickness(0));
+            titleRow.Children.Add(tag);
+            sp.Children.Add(titleRow);
+
+            sp.Children.Add(Wrap("Select trace segments in the PCB editor first. No clearance check is performed — run Design › Rule Check afterwards.",
+                                 12, TextDim, new Thickness(0, 6, 0, 0)));
+
+            // five parameters across one row
+            Grid fields = new Grid();
+            fields.Margin = new Thickness(0, 11, 0, 0);
+            for (int i = 0; i < 9; i++)
+                fields.ColumnDefinitions.Add(i % 2 == 0 ? Col() : ColFixed(8));
+
+            UIElement f0 = LabeledField("Pitch mm", Settings.GetValue("FencePitch", "1.000"), "Fence pitch in millimetres", out fencePitch);
+            UIElement f1 = LabeledField("Offset mm", Settings.GetValue("FenceOffset", "0.500"), "Fence offset from trace centreline in millimetres", out fenceOffset);
+            UIElement f2 = LabeledField("Via Ø mm", Settings.GetValue("FenceDia", "0.600"), "Via pad diameter in millimetres", out fenceDia);
+            UIElement f3 = LabeledField("Hole mm", Settings.GetValue("FenceHole", "0.300"), "Via hole size in millimetres", out fenceHole);
+            UIElement f4 = LabeledField("Net", Settings.GetValue("FenceNet", "GND"), "Net to tie the fence vias to", out fenceNet);
+
+            Grid.SetColumn(f0, 0); fields.Children.Add(f0);
+            Grid.SetColumn(f1, 2); fields.Children.Add(f1);
+            Grid.SetColumn(f2, 4); fields.Children.Add(f2);
+            Grid.SetColumn(f3, 6); fields.Children.Add(f3);
+            Grid.SetColumn(f4, 8); fields.Children.Add(f4);
+            sp.Children.Add(fields);
+
+            // sides on the left, action on the right
+            DockPanel actions = new DockPanel();
+            actions.LastChildFill = false;
+            actions.Margin = new Thickness(0, 11, 0, 0);
+
+            Button go = PrimaryButton("Fence selected traces", 32);
+            go.MinWidth = 168;
+            go.Click += delegate { DoViaFence(); };
+            DockPanel.SetDock(go, Dock.Right);
+            actions.Children.Add(go);
+
+            StackPanel sides = new StackPanel();
+            sides.Orientation = Orientation.Horizontal;
+            sides.VerticalAlignment = VerticalAlignment.Center;
+            fenceLeft = SideCheck("Left", Settings.GetValue("FenceLeft", "1") != "0");
+            fenceRight = SideCheck("Right", Settings.GetValue("FenceRight", "1") != "0");
+            fenceRight.Margin = new Thickness(14, 0, 0, 0);
+            sides.Children.Add(fenceLeft);
+            sides.Children.Add(fenceRight);
+            DockPanel.SetDock(sides, Dock.Left);
+            actions.Children.Add(sides);
+
+            sp.Children.Add(actions);
+            card.Child = sp;
+            return card;
+        }
+
+        private UIElement BuildNetLengthsCard()
+        {
+            Border card = CardBorderEl(new Thickness(15, 13, 15, 13));
+            StackPanel sp = new StackPanel();
+
+            sp.Children.Add(Text("Net lengths", 13, TextPrimary, FontWeights.SemiBold, new Thickness(0)));
+            sp.Children.Add(Wrap("Routed length and delay per net and per pin pair, straight from Altium's own calculator.",
+                                 12, TextDim, new Thickness(0, 6, 0, 0)));
+
+            Button go = PrimaryButton("Export net lengths", 32);
+            go.Margin = new Thickness(0, 11, 0, 0);
+            go.Click += delegate { DoExportNetLengths(); };
+            sp.Children.Add(go);
+
+            card.Child = sp;
+            return card;
+        }
+
+        private UIElement LabeledField(string label, string initial, string automation, out TextBox box)
+        {
+            StackPanel sp = new StackPanel();
+            sp.Children.Add(Text(label, 11, TextDim, FontWeights.Normal, new Thickness(0, 0, 0, 5)));
+
+            box = new TextBox();
+            box.Text = initial;
+            box.Height = 30;
+            box.FontFamily = MonoFont;
+            box.FontSize = 12;
+            box.Foreground = Hex("#DCDCDC");
+            box.Background = Field;
+            box.BorderBrush = FieldBorder;
+            box.BorderThickness = new Thickness(1);
+            box.Padding = new Thickness(7, 0, 7, 0);
+            box.VerticalContentAlignment = VerticalAlignment.Center;
+            box.CaretBrush = TextPrimary;
+            AutomationName(box, automation);
+
+            sp.Children.Add(box);
+            return sp;
+        }
+
+        private CheckBox SideCheck(string label, bool initial)
+        {
+            CheckBox cb = new CheckBox();
+            cb.Content = label;
+            cb.IsChecked = initial;
+            cb.Foreground = TextDim;
+            cb.FontFamily = UiFont;
+            cb.FontSize = 12;
+            cb.VerticalContentAlignment = VerticalAlignment.Center;
+            cb.Cursor = Cursors.Hand;
+            AutomationName(cb, "Fence the " + label.ToLowerInvariant() + " side");
+            return cb;
+        }
+
         private UIElement BuildExportColumn()
         {
             DockPanel dp = new DockPanel();
@@ -794,6 +960,152 @@ namespace AltiumSpike
             statusText.Text = message;
             statusDot.Fill = colour;
             Log.Write("SpikeWindow status: " + message);
+        }
+
+        // ---------------- high-speed handlers ----------------
+
+        private void DoExportNetLengths()
+        {
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetBoard(out pcbServer, out board))
+                {
+                    SetStatus("No active PCB document", Amber);
+                    return;
+                }
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                NetLengths.Result res = NetLengths.Export(board, folder);
+
+                List<string> lines = new List<string>();
+                lines.Add("net_lengths.csv — " + res.NetRows + " net(s)");
+                lines.Add("pin_pair_lengths.csv — " + res.PinPairRows + " pin pair(s)");
+                foreach (string n in res.Notes) lines.Add(n);
+                lines.Add(folder);
+
+                ShowResult("Net lengths exported", Green, lines.ToArray());
+                SetStatus("2 files written to " + folder, Green);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow.DoExportNetLengths", ex);
+                ShowResult("Net length export failed", Red, ex.GetType().Name + " — " + ex.Message);
+                SetStatus("Net length export failed", Red);
+            }
+        }
+
+        private void DoViaFence()
+        {
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetBoard(out pcbServer, out board))
+                {
+                    SetStatus("No active PCB document", Amber);
+                    return;
+                }
+
+                FenceOptions opt = new FenceOptions();
+                string problem;
+                if (!ReadFenceOptions(opt, out problem))
+                {
+                    ShowResult("Check the fence settings", Amber, problem);
+                    SetStatus(problem, Amber);
+                    return;
+                }
+
+                RememberFenceOptions(opt);
+
+                ViaFence.Result r = ViaFence.Fence(pcbServer, board, opt);
+
+                if (r.Placed == 0)
+                {
+                    List<string> lines = new List<string>();
+                    if (r.Errors.Count > 0) lines.AddRange(r.Errors);
+                    else lines.Add("Nothing was placed.");
+                    ShowResult("No vias placed", Amber, lines.ToArray());
+                    SetStatus("No vias placed", Amber);
+                    return;
+                }
+
+                List<string> ok = new List<string>();
+                ok.Add(r.Placed + " via(s) on net " + opt.NetName + " along " + r.SegmentsUsed + " segment(s)");
+                ok.Add("pitch " + opt.PitchMM.ToString("0.###", CultureInfo.InvariantCulture) +
+                       " mm · offset " + opt.OffsetMM.ToString("0.###", CultureInfo.InvariantCulture) +
+                       " mm · " + opt.ViaDiameterMM.ToString("0.###", CultureInfo.InvariantCulture) +
+                       "/" + opt.HoleSizeMM.ToString("0.###", CultureInfo.InvariantCulture) + " mm");
+                if (r.SkippedDuplicate > 0)
+                    ok.Add(r.SkippedDuplicate + " candidate(s) merged at segment junctions");
+                if (r.SkippedInnerArc > 0)
+                    ok.Add("inner wall skipped on " + r.SkippedInnerArc + " arc(s) (offset ≥ radius)");
+                if (r.SkippedNonTrace > 0)
+                    ok.Add(r.SkippedNonTrace + " selected object(s) were not tracks or arcs");
+                if (r.HitCap)
+                    ok.Add("STOPPED at the via limit — the pitch may be too small");
+                foreach (string e in r.Errors) ok.Add(e);
+                ok.Add("No clearance check was performed — run Design › Rule Check.");
+
+                ShowResult("Via fence placed", Green, ok.ToArray());
+                SetStatus(r.Placed + " vias placed — run DRC", Green);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow.DoViaFence", ex);
+                ShowResult("Via fence failed", Red, ex.GetType().Name + " — " + ex.Message);
+                SetStatus("Via fence failed", Red);
+            }
+        }
+
+        // This machine's Windows locale is fr-FR, where the decimal separator
+        // is a comma. Parsing invariant-only would reject "0,5" typed by
+        // someone using their own keyboard habits; parsing current-culture
+        // only would reject "0.5" pasted from a datasheet. Accept both by
+        // normalising the separator, which is unambiguous here because none
+        // of these fields is ever a thousands-grouped number.
+        private static bool TryMM(string raw, out double value)
+        {
+            value = 0;
+            if (raw == null) return false;
+            string s = raw.Trim().Replace(',', '.');
+            if (s.Length == 0) return false;
+            return double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        }
+
+        private bool ReadFenceOptions(FenceOptions opt, out string problem)
+        {
+            problem = null;
+
+            if (!TryMM(fencePitch.Text, out opt.PitchMM)) { problem = "Pitch is not a number."; return false; }
+            if (!TryMM(fenceOffset.Text, out opt.OffsetMM)) { problem = "Offset is not a number."; return false; }
+            if (!TryMM(fenceDia.Text, out opt.ViaDiameterMM)) { problem = "Via diameter is not a number."; return false; }
+            if (!TryMM(fenceHole.Text, out opt.HoleSizeMM)) { problem = "Hole size is not a number."; return false; }
+
+            opt.NetName = (fenceNet.Text ?? "").Trim();
+            if (opt.NetName.Length == 0) { problem = "Enter the net the fence vias belong to."; return false; }
+
+            opt.LeftSide = fenceLeft.IsChecked == true;
+            opt.RightSide = fenceRight.IsChecked == true;
+            if (!opt.LeftSide && !opt.RightSide) { problem = "Tick at least one side."; return false; }
+
+            // The remaining range checks live in ViaFence.Fence so the same
+            // rules apply however it is called; this only catches what would
+            // otherwise be a confusing empty result.
+            return true;
+        }
+
+        private void RememberFenceOptions(FenceOptions opt)
+        {
+            Settings.SetValue("FencePitch", fencePitch.Text.Trim());
+            Settings.SetValue("FenceOffset", fenceOffset.Text.Trim());
+            Settings.SetValue("FenceDia", fenceDia.Text.Trim());
+            Settings.SetValue("FenceHole", fenceHole.Text.Trim());
+            Settings.SetValue("FenceNet", opt.NetName);
+            Settings.SetValue("FenceLeft", opt.LeftSide ? "1" : "0");
+            Settings.SetValue("FenceRight", opt.RightSide ? "1" : "0");
         }
 
         private void ShowResult(string title, Brush accent, params string[] lines)

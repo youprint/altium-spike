@@ -1,11 +1,12 @@
 # AltiumSpike
 
-A C# extension for **Altium Designer 26** that adds CSV import/export and JLCPCB
-assembly output, in one window.
+A C# extension for **Altium Designer 26** that adds CSV import/export, JLCPCB
+assembly output and high-speed routing tools, in one window.
 
 It exports board data for external tooling, places components, tracks, vias,
-pours and regions back from CSV, locks and unlocks components, and generates
-JLCPCB-ready BOM and pick-and-place files.
+pours and regions back from CSV, locks and unlocks components, generates
+JLCPCB-ready BOM and pick-and-place files, exports per-net and per-pin-pair
+length and delay, and builds via fences along selected RF traces.
 
 ![The AltiumSpike window](docs/window.png)
 
@@ -58,6 +59,67 @@ dangling edit transaction that blocks **File → Save** afterwards.
 
 ![After a JLCPCB export](docs/window-result.png)
 
+### High-speed
+
+Two tools aimed at RF and fast digital work, in their own strip at the bottom
+of the window because neither is an ordinary "dump the board to CSV" action.
+
+#### Net lengths
+
+| Output | Contents |
+| --- | --- |
+| `net_lengths.csv` | `Net,Class,PinCount,ViaCount,RoutedLength,SignalLength,DelayTotal_Raw,SignalDelay_Raw,InDiffPair` |
+| `pin_pair_lengths.csv` | `Net,Class,PinPair,FromPin,ToPin,RoutedLength,UnroutedLength,TotalLength,DelayTotal_Raw,NodeCount` |
+
+Lengths are millimetres. The numbers come from **Altium's own calculators**
+(`IPCB_Net2`, `IPCB_PinPair`), not from summing track geometry, so they agree
+with the PCB panel by construction. Summing tracks yourself is the obvious
+implementation and it is wrong: it misses via barrel contributions, double
+counts overlapping segments after a loop removal, and knows nothing about
+xSignals spanning series terminators.
+
+Both files exist because a net-level total is the wrong number the moment a
+net has more than two nodes. A DDR4 address line routed fly-by to four DRAMs
+is one net with one `RoutedLength` but four distinct pin-to-pin distances, and
+it is those you match against the clock.
+
+> The delay columns are suffixed `_Raw`. The SDK returns a bare `Double` with
+> no unit in the signature and no documentation, so the value is passed
+> through unscaled rather than being given a unit it might not have. Check one
+> net against Altium's own panel to pin the unit down for your install.
+
+#### Via fence
+
+Places a via shield along the tracks and arcs **currently selected** in the
+PCB editor, at a fixed pitch and offset. Altium's native via stitching floods
+a polygon at a grid pitch; it has no notion of *follow this trace at 0.4 mm on
+both sides every 1.2 mm*. That distinction is the whole feature — the leakage
+you are suppressing depends on the gap between adjacent vias, not on average
+via density.
+
+1. Select the trace segments in the PCB editor
+2. Set pitch / offset / via Ø / hole / net, tick the walls you want
+3. **Fence selected traces**
+
+Settings are remembered between sessions, and the `ViaFence` command repeats
+the last fence on a new selection without opening the window.
+
+**No clearance check is performed.** Every candidate via is placed; nothing
+consults the clearance rules or tests for existing copper. This is deliberate
+— placement stays fast and completely predictable, and DRC is the authority on
+what is legal. Run **Design → Rule Check** afterwards. The result panel says so
+on every run.
+
+Two details that are easy to get wrong and are covered by tests:
+
+- **Each wall is stepped at its own radius on an arc.** Stepping the
+  centreline at `pitch / radius` and dropping a via either side puts the outer
+  wall at `pitch × (radius + offset) / radius` — 10% too open on a 5 mm bend,
+  50% too open on a 1 mm bend. Pitch means via-to-via spacing everywhere.
+- **Junction de-duplication is per wall.** With a tight offset the mirrored
+  pair can sit closer to each other than half the pitch, so a single shared
+  list would silently delete one wall of the fence.
+
 ---
 
 ## Requirements
@@ -97,6 +159,24 @@ Then:
 ```powershell
 dotnet build -c Debug
 ```
+
+## Test
+
+The via fence geometry has a standalone test harness. It compiles
+`FenceGeometry.cs` directly — the same file the plugin ships, not a copy — so
+the assertions cannot drift from what runs. `FenceGeometry.cs` references no
+Altium type, so the tests need no Altium installation and no SDK assemblies:
+
+```powershell
+dotnet run --project tests/FenceGeometryTests
+```
+
+35 assertions covering wall spacing on straight, diagonal and curved runs,
+junction de-duplication, the inner-wall fold case, the via cap and option
+validation. Exit code is 0 when they all pass.
+
+Nothing else is covered by automated tests; the import, export and JLCPCB
+paths need a live board and were verified by hand (see **Status**).
 
 ## Deploy
 
@@ -177,6 +257,28 @@ Hard-won details that cost real time to establish:
   Properties panel displays the centre, which makes a wrong implementation look
   right.
 - `Component.Moveable` is inverted: **`false` means locked**.
+- The selection is `IPCB_Board.GetState_SelectecObjectCount()` — Altium's own
+  typo, preserved in the public API. The typed accessor is
+  `GetState_SelectecObject(board, i)` on `IPCB_BoardHelper`. Snapshot the
+  selection before placing anything; adding objects can disturb it, and
+  walking it by index while it changes underneath silently skips segments.
+- Routed length and delay are **already computed** and exposed:
+  `IPCB_Net.GetState_RoutedLength()`, and on `IPCB_Net2`
+  `GetState_RoutedLength64()`, `GetState_SignalLength()`,
+  `GetState_DelayTotal()`, `GetState_SignalDelay()`. Pin pairs come from
+  `board.GetState_PinPairsManager()`, and `IPCB_PinPair` carries routed,
+  unrouted and total length plus delay. Do not re-derive any of it from track
+  geometry.
+- Delays are cached. Call `ResetDelaysCalculator()` on the board cast to
+  `IPCB_BoardEx` first, or a board edited since the last calculation hands
+  back stale numbers.
+- Net classes are `TObjectId.eClassObject` with
+  `GetState_MemberKind() == eClassMemberKind_Net`. `IPCB_ObjectClass` exposes
+  `IsMember(string)` but no member enumeration, so build the net→class map by
+  asking each class about each net, and skip `All Nets` — every net is in it.
+- Lengths are `Int64` but `EDP.Utils.CoordToMMs` only takes `Int32`. The
+  Int32 range is about 54 m so any real net fits, but derive the ratio from
+  `CoordToMMs` itself rather than hardcoding 393700.787 if you need a fallback.
 - To match DelphiScript's numeric output exactly: format with
   `CultureInfo.InvariantCulture`, normalise negative zero (.NET prints
   `-0.000` where Delphi prints `0.000`), and round with
@@ -199,11 +301,16 @@ Verified against a real 2-layer board in Altium 26.8.1:
   passes format conformance.
 - All seven `objects.csv` types, pours, regions and lock/unlock placed
   correctly and were read back to confirm.
+- Via fence geometry: 35 automated assertions, all passing.
 
 Known rough edges:
 
 - Rectangular pours and regions only; arbitrary outlines are not implemented.
 - Standalone pads and dimensions are not handled by `objects.csv`.
+- The via fence spans Top → Bottom only; blind and buried spans are not
+  offered, and there is no clearance check (see above).
+- The delay columns are unscaled SDK values — see the note under
+  **Net lengths**.
 - The UI is dark-themed to sit beside Altium's default theme.
 
 ---
