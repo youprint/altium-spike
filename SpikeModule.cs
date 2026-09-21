@@ -114,6 +114,13 @@ namespace AltiumSpike
             Register(launcher, "ViaFence", RunViaFence);
             Register(launcher, "AltiumSpike:ViaFence", RunViaFence);
 
+            Register(launcher, "StackupTable", RunStackupTable);
+            Register(launcher, "AltiumSpike:StackupTable", RunStackupTable);
+            Register(launcher, "AssemblyNotes", RunAssemblyNotes);
+            Register(launcher, "AltiumSpike:AssemblyNotes", RunAssemblyNotes);
+            Register(launcher, "PackageRelease", RunPackageRelease);
+            Register(launcher, "AltiumSpike:PackageRelease", RunPackageRelease);
+
             Log.Write("InitializeCommands finished");
         }
 
@@ -449,6 +456,103 @@ namespace AltiumSpike
                 Log.Say(title, "FAILED: " + ex.GetType().Name + " -- " + ex.Message);
             }
             Log.Write("<<< RunViaFence returned");
+        }
+
+        // --- StackupTable / AssemblyNotes / PackageRelease ---
+        //
+        // Like ViaFence, these run from the parameters the window remembered.
+        // The window is where you set them up; the commands are for repeating
+        // the same operation without opening it, which is what you want when
+        // the settings have already been decided for a project.
+
+        private void RunStackupTable(IServerDocumentView view, ref string parameters)
+        {
+            Log.Write(">>> RunStackupTable DISPATCHED");
+            const string title = "Layer Stackup Table";
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetPcb(title, out pcbServer, out board)) return;
+
+                StackupTable.Options opt = new StackupTable.Options();
+                opt.LayerName = Settings.GetValue("StackLayer", "Drill Drawing");
+                opt.OriginXMM = Num(Settings.GetValue("StackX", "10.0"), 10.0);
+                opt.OriginYMM = Num(Settings.GetValue("StackY", "10.0"), 10.0);
+                opt.TextHeightMM = Num(Settings.GetValue("StackTextH", "1.2"), 1.2);
+                opt.ImperialToo = Settings.GetValue("StackImperial", "1") != "0";
+                opt.ReplaceExisting = Settings.GetValue("StackReplace", "1") != "0";
+
+                Log.Say(title, StackupTable.Generate(pcbServer, board, opt).Summarise());
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("RunStackupTable", ex);
+                Log.Say(title, "FAILED: " + ex.GetType().Name + " -- " + ex.Message);
+            }
+            Log.Write("<<< RunStackupTable returned");
+        }
+
+        private void RunAssemblyNotes(IServerDocumentView view, ref string parameters)
+        {
+            Log.Write(">>> RunAssemblyNotes DISPATCHED");
+            const string title = "Assembly Notes";
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetPcb(title, out pcbServer, out board)) return;
+
+                AssemblyNotes.Options opt = new AssemblyNotes.Options();
+                opt.LayerName = Settings.GetValue("NotesLayer", "Mechanical 1");
+                opt.OriginXMM = Num(Settings.GetValue("NotesX", "10.0"), 10.0);
+                opt.OriginYMM = Num(Settings.GetValue("NotesY", "10.0"), 10.0);
+                opt.SurfaceFinish = Settings.GetValue("NotesFinish", "ENIG");
+                opt.IpcClass = Settings.GetValue("NotesIpc", "2");
+                opt.ReplaceExisting = Settings.GetValue("NotesReplace", "1") != "0";
+
+                Log.Say(title, AssemblyNotes.Generate(pcbServer, board, opt).Summarise());
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("RunAssemblyNotes", ex);
+                Log.Say(title, "FAILED: " + ex.GetType().Name + " -- " + ex.Message);
+            }
+            Log.Write("<<< RunAssemblyNotes returned");
+        }
+
+        private void RunPackageRelease(IServerDocumentView view, ref string parameters)
+        {
+            Log.Write(">>> RunPackageRelease DISPATCHED");
+            const string title = "Package Release";
+            try
+            {
+                ReleaseBundle.Options opt = new ReleaseBundle.Options();
+                opt.ProjectName = Settings.GetValue("RelProject", "");
+                opt.Revision = Settings.GetValue("RelRev", "RevA");
+                opt.OutJobPath = Settings.GetValue("RelOutJob", "");
+                opt.OutputFolder = Settings.GetValue("RelOutFolder", "");
+                opt.DestinationFolder = Settings.GetValue("RelDest", "");
+                opt.GenerateOutputs = Settings.GetValue("RelGenerate", "0") != "0";
+                opt.Stamp = DateTime.Now;
+
+                if (opt.ProjectName.Length == 0)
+                {
+                    Log.Say(title, "No project name has been set. Open the AltiumSpike window " +
+                                   "and fill in the release fields once; this command reuses them.");
+                    return;
+                }
+
+                ReleaseBundle.Result r = ReleasePackager.Package(client, opt);
+                foreach (string d in r.Diagnostics) Log.Write("ReleasePackager: " + d);
+                Log.Say(title, r.Summarise());
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("RunPackageRelease", ex);
+                Log.Say(title, "FAILED: " + ex.GetType().Name + " -- " + ex.Message);
+            }
+            Log.Write("<<< RunPackageRelease returned");
         }
 
         // Same comma/point tolerance as the window: the settings file holds

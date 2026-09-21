@@ -1,7 +1,8 @@
 # AltiumSpike
 
 A C# extension for **Altium Designer 26** that adds CSV import/export, JLCPCB
-assembly output and high-speed routing tools, in one window.
+assembly output, high-speed routing tools and fabrication documentation, in
+one window.
 
 It exports board data for external tooling, places components, tracks, vias,
 pours and regions back from CSV, locks and unlocks components, generates
@@ -120,6 +121,88 @@ Two details that are easy to get wrong and are covered by tests:
   pair can sit closer to each other than half the pitch, so a single shared
   list would silently delete one wall of the fence.
 
+### Fabrication
+
+#### Layer stackup table
+
+Walks the **physical** layer stack — copper and dielectric interleaved in true
+Z order — and draws it as a ruled table on a mechanical or drill-drawing
+layer: layer name, type, material, thickness in mm and mil, copper weight and
+Er, with a totals row carrying the finished board thickness.
+
+`eLayerClass_Electrical` would give you the copper only, so an eight-layer
+board would render as eight rows with nothing between them. That is a layer
+list, not a stackup. Copper weight is derived from thickness (1 oz ≡ 34.79 µm)
+and left blank when the foil is not within 10% of a common weight, rather than
+mislabelling an unusual foil as 1 oz.
+
+Re-running replaces the previous table rather than drawing a second one on top.
+
+#### Assembly notes
+
+Emits a numbered set of fabrication notes as text on a chosen layer, built
+from the board itself: size, copper layer count, finished thickness, narrowest
+track, smallest drilled hole, minimum clearance, plus the boilerplate (IPC
+class, surface finish, mask and silkscreen colours, electrical test).
+
+The distinction this feature is built around is **measured versus specified**:
+
+| Value | Source |
+| --- | --- |
+| Minimum trace width | **Measured** — every track and arc on copper layers |
+| Smallest hole | **Measured** — every pad and via |
+| Minimum clearance | **From the rule**, and labelled `PER DESIGN RULES` in the note text |
+
+They are different numbers and they fail differently. A clearance rule set to
+0.1 mm on a board whose tightest gap is 0.2 mm quotes you for finer work than
+you need; a rule looser than the artwork tells the fab nothing. True minimum
+copper-to-copper clearance needs an all-pairs geometric analysis across every
+layer — that is what DRC is for, and duplicating it badly would produce a
+number worse than no number. So the rule value is reported and *said to be* a
+rule value, in the artwork, not just here.
+
+Silkscreen and mechanical tracks are excluded from the width measurement, or a
+text stroke would set your "minimum trace width".
+
+#### Release candidate package
+
+Collects the fabrication outputs, renames to `Project_RevA_20260921.zip`, zips
+them, verifies the archive reopens with the expected entry count, and delivers
+it to a folder or network share.
+
+> **On "bypassing the Output Job".** There is no SDK call that writes a Gerber,
+> an NC drill file, an ODB++ archive or a STEP model. Both Altium SDK
+> assemblies were searched: what exists is `IWSM_OutputJobDocument`, which
+> enumerates and creates *outputers* — the Output Job machinery itself — and
+> `CommandLauncher.LaunchCommand`, which runs Altium's own processes.
+> Reimplementing RS-274X and Excellon here was considered and rejected: the
+> hard parts are aperture generation, polygon fill decomposition and drill
+> symbol assignment, and a subtly wrong writer produces files that look fine
+> in a viewer and fail at the fab.
+>
+> So this is delivered as *you never open the Output Job dialogs*: keep one
+> `.OutJob` with your fab settings, and one click runs it and does everything
+> after it.
+
+File safety, all enforced and all tested:
+
+- Source files are **copied, never moved** — a failed run costs nothing
+- An existing destination archive is **never overwritten**; the run fails and
+  says so, because two different builds under one release name is worse than a
+  failed run
+- The archive is reopened and its entries counted **before** delivery, while
+  it is still in a temp folder rather than on the release share
+- A previous release archive sitting in the output folder is excluded, so
+  releases cannot nest inside each other
+- Two files with the same leaf name from different subfolders are both kept
+
+**Run the Output Job first** is off by default. That launch is the one call in
+this project that could not be confirmed from SDK metadata — the process name
+lives in Altium's process reference — so it is opt-in until it has been seen
+to work on your installation. Everything after generation works regardless,
+and **Dry run** reports exactly what would be packaged without writing
+anything.
+
 ---
 
 ## Requirements
@@ -169,14 +252,25 @@ Altium type, so the tests need no Altium installation and no SDK assemblies:
 
 ```powershell
 dotnet run --project tests/FenceGeometryTests
+dotnet run --project tests/ReleaseBundleTests
 ```
 
-35 assertions covering wall spacing on straight, diagonal and curved runs,
-junction de-duplication, the inner-wall fold case, the via cap and option
-validation. Exit code is 0 when they all pass.
+Both compile the shipped source file directly — `FenceGeometry.cs` and
+`ReleaseBundle.cs` — rather than a copy, so the assertions cannot drift from
+what runs. Neither file references an Altium or WPF type, which is what makes
+this possible: the tests need no Altium installation and no SDK assemblies.
 
-Nothing else is covered by automated tests; the import, export and JLCPCB
-paths need a live board and were verified by hand (see **Status**).
+- **FenceGeometryTests** — 35 assertions: wall spacing on straight, diagonal
+  and curved runs, junction de-duplication, the inner-wall fold case, the via
+  cap, option validation.
+- **ReleaseBundleTests** — 30 assertions: archive naming and filename
+  sanitising, extension filtering, refusing to overwrite an existing release,
+  nested-release exclusion, same-leaf-name collisions, dry run, and that every
+  refusal is explained rather than silent.
+
+Exit code is 0 when they all pass.
+
+The rest needs a live board and was verified by hand (see **Status**).
 
 ## Deploy
 
@@ -279,6 +373,28 @@ Hard-won details that cost real time to establish:
 - Lengths are `Int64` but `EDP.Utils.CoordToMMs` only takes `Int32`. The
   Int32 range is about 54 m so any real net fits, but derive the ratio from
   `CoordToMMs` itself rather than hardcoding 393700.787 if you need a fallback.
+- The layer stack is `board.GetState_LayerStack()` walked with
+  `IPCB_LayerStackBaseHelper.First/Next(TLayerClassID.eLayerClass_Physical)`.
+  There is no single `thickness` member: copper is
+  `IPCB_ElectricalLayer.GetState_CopperThickness()`, dielectric is
+  `IPCB_DielectricLayer.GetState_DielectricHeight()`.
+- Resolve layers by name through `pcbServer.LayerUtils().FromString()` and set
+  them with `SetState_V7Layer`, rather than switching over `TV6_Layer`. The
+  enum has `eV6_Mechanical1..16` plus the drill and overlay layers, and a
+  hand-written switch is both long and wrong the moment someone renames a
+  mechanical layer in Layer Stack Manager.
+- `TObjectSet` has no `Include`; build it from an array:
+  `new TObjectSet(new TObjectId[] { ... })`.
+- Collect primitives to delete during iteration and remove them **after** the
+  iterator is destroyed. Deleting from under a live iterator crashes Altium
+  rather than throwing something catchable.
+- **There is no fabrication-output API.** No SDK call writes a Gerber, NC
+  drill, ODB++ or STEP file. `IWSM_OutputJobDocument` manipulates Output Job
+  outputers; actual generation goes through `CommandLauncher.LaunchCommand`
+  and Altium's process names, which are not in the metadata.
+- Do not use `Path.GetInvalidFileNameChars()` to sanitise a name that must be
+  valid on Windows. It is platform-dependent — on Linux it returns only `/`
+  and NUL, so `:`, `|`, `?` and `*` pass straight through. Write the set out.
 - To match DelphiScript's numeric output exactly: format with
   `CultureInfo.InvariantCulture`, normalise negative zero (.NET prints
   `-0.000` where Delphi prints `0.000`), and round with
@@ -302,6 +418,11 @@ Verified against a real 2-layer board in Altium 26.8.1:
 - All seven `objects.csv` types, pours, regions and lock/unlock placed
   correctly and were read back to confirm.
 - Via fence geometry: 35 automated assertions, all passing.
+- Release bundling: 30 automated assertions, all passing.
+
+Not yet exercised on a live board — built and deployed, verification pending:
+the stackup table, the assembly notes, and the Output Job launch inside the
+release packager.
 
 Known rough edges:
 
@@ -311,6 +432,11 @@ Known rough edges:
   offered, and there is no clearance check (see above).
 - The delay columns are unscaled SDK values — see the note under
   **Net lengths**.
+- The stackup table and notes are drawn as tracks and text, not as a native
+  Altium table object, so they do not update when the stackup changes — re-run
+  the generator.
+- The release packager's Output Job launch is unverified (see above); the
+  packaging half is not.
 - The UI is dark-themed to sit beside Altium's default theme.
 
 ---

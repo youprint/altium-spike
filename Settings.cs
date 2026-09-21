@@ -95,6 +95,42 @@ namespace AltiumSpike
             return null;
         }
 
+        // Generic file picker, used for the .OutJob. Returns null on cancel,
+        // which every caller treats as "leave the field alone" rather than
+        // "clear it" -- cancelling a browse should never destroy a path the
+        // user already typed.
+        public static string PickFile(string title, string filter)
+        {
+            try
+            {
+                Microsoft.Win32.OpenFileDialog dlg = new Microsoft.Win32.OpenFileDialog();
+                dlg.Title = title;
+                dlg.Filter = filter;
+                dlg.Multiselect = false;
+                dlg.CheckFileExists = true;
+
+                string current = GetInputFolder();
+                if (current != null) dlg.InitialDirectory = current;
+
+                bool? ok = dlg.ShowDialog();
+                if (ok == true && !string.IsNullOrEmpty(dlg.FileName))
+                {
+                    try
+                    {
+                        string dir = Path.GetDirectoryName(dlg.FileName);
+                        if (!string.IsNullOrEmpty(dir)) SetInputFolder(dir);
+                    }
+                    catch { }
+                    return dlg.FileName;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("Settings.PickFile", ex);
+            }
+            return null;
+        }
+
 
         // --- input folder (remembered from the last CSV you picked) ---
 

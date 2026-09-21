@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>ReleaseBundleTests</AssemblyName>
+    <RootNamespace>BundleTest</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <!--
+    Compiles the plugin's own ReleaseBundle.cs rather than a copy, so these
+    assertions cannot drift from what ships. ReleaseBundle.cs references no
+    Altium type and no WPF type, which is what makes this possible: the tests
+    run anywhere dotnet does.
+
+    Run it from the repository root with dotnet run, pointing at this
+    directory. Exit code is 0 when every assertion passes, 1 otherwise.
+  -->
+  <ItemGroup>
+    <Compile Include="../../ReleaseBundle.cs" />
+    <Compile Include="Tests.cs" />
+  </ItemGroup>
+
+</Project>

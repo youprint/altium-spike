@@ -122,13 +122,27 @@ namespace AltiumSpike
         private TextBox fencePitch, fenceOffset, fenceDia, fenceHole, fenceNet;
         private CheckBox fenceLeft, fenceRight;
 
+        // stackup table
+        private ComboBox stackLayer;
+        private TextBox stackX, stackY, stackTextH;
+        private CheckBox stackImperial, stackReplace;
+
+        // assembly notes
+        private ComboBox notesLayer;
+        private TextBox notesX, notesY, notesFinish, notesIpc;
+        private CheckBox notesReplace;
+
+        // release packager
+        private TextBox relProject, relRev, relOutJob, relOutFolder, relDest;
+        private CheckBox relGenerate, relDryRun;
+
         private SpikeWindow(IClient client)
         {
             this.client = client;
 
             Title = "AltiumSpike";
             Width = 900;
-            Height = 830;
+            Height = 880;
             MinWidth = 760;
             MinHeight = 560;
             WindowStyle = WindowStyle.None;
@@ -257,13 +271,31 @@ namespace AltiumSpike
             g.Margin = new Thickness(20, 18, 20, 18);
             g.RowDefinitions.Add(Row(GridLength.Auto));                          // board header
             g.RowDefinitions.Add(Row(GridLength.Auto));                          // results
-            g.RowDefinitions.Add(Row(new GridLength(1, GridUnitType.Star)));     // columns
-            g.RowDefinitions.Add(Row(GridLength.Auto));                          // high-speed tools
+            g.RowDefinitions.Add(Row(new GridLength(1, GridUnitType.Star)));     // scrolling body
 
             g.Children.Add(At(BuildBoardHeader(), 0));
             g.Children.Add(At(BuildResultsCard(), 1));
-            g.Children.Add(At(BuildColumns(), 2));
-            g.Children.Add(At(BuildHighSpeedSection(), 3));
+
+            // The body scrolls. With three tool groups stacked, a window tall
+            // enough to show everything at once would not fit on a laptop
+            // screen beside Altium, which is where this actually gets used.
+            // The board header and the results strip stay pinned above it,
+            // because those are what you look at after pressing a button.
+            StackPanel body = new StackPanel();
+
+            FrameworkElement cols = BuildColumns() as FrameworkElement;
+            if (cols != null) cols.MinHeight = 340;   // keeps the two columns readable
+            body.Children.Add(cols);
+            body.Children.Add(BuildHighSpeedSection());
+            body.Children.Add(BuildFabricationSection());
+
+            ScrollViewer sv = new ScrollViewer();
+            sv.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+            sv.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            sv.Padding = new Thickness(0, 0, 6, 0);
+            sv.Content = body;
+
+            g.Children.Add(At(sv, 2));
             return g;
         }
 
@@ -537,6 +569,319 @@ namespace AltiumSpike
             cb.Cursor = Cursors.Hand;
             AutomationName(cb, "Fence the " + label.ToLowerInvariant() + " side");
             return cb;
+        }
+
+        // ---------------- fabrication documentation & release ----------------
+        //
+        // Three tools that all end in an artefact a fabricator reads: a
+        // stackup table and a note block drawn onto the board, and the
+        // release archive itself. They share a section because they share a
+        // moment -- the one just before a board goes out.
+        private UIElement BuildFabricationSection()
+        {
+            StackPanel outer = new StackPanel();
+            outer.Margin = new Thickness(0, 15, 0, 0);
+            outer.Children.Add(SectionHeader("FABRICATION"));
+
+            Grid top = new Grid();
+            top.ColumnDefinitions.Add(Col());
+            top.ColumnDefinitions.Add(ColFixed(16));
+            top.ColumnDefinitions.Add(Col());
+
+            UIElement stackCard = BuildStackupCard();
+            Grid.SetColumn(stackCard, 0);
+            top.Children.Add(stackCard);
+
+            UIElement notesCard = BuildNotesCard();
+            Grid.SetColumn(notesCard, 2);
+            top.Children.Add(notesCard);
+
+            outer.Children.Add(top);
+            outer.Children.Add(BuildReleaseCard());
+            return outer;
+        }
+
+        private UIElement BuildStackupCard()
+        {
+            Border card = CardBorderEl(new Thickness(15, 13, 15, 13));
+            StackPanel sp = new StackPanel();
+
+            sp.Children.Add(Text("Layer stackup table", 13, TextPrimary, FontWeights.SemiBold, new Thickness(0)));
+            sp.Children.Add(Wrap("Draws the physical stack — material, thickness, copper weight and Er — as a ruled table.",
+                                 12, TextDim, new Thickness(0, 6, 0, 0)));
+
+            Grid f = new Grid();
+            f.Margin = new Thickness(0, 11, 0, 0);
+            for (int i = 0; i < 7; i++) f.ColumnDefinitions.Add(i % 2 == 0 ? Col() : ColFixed(8));
+
+            UIElement c0 = LabeledCombo("Layer", PcbDraw.DrawableLayers,
+                                        Settings.GetValue("StackLayer", "Drill Drawing"),
+                                        "Layer to draw the stackup table on", out stackLayer);
+            UIElement c1 = LabeledField("Origin X", Settings.GetValue("StackX", "10.0"),
+                                        "Stackup table origin X in millimetres", out stackX);
+            UIElement c2 = LabeledField("Origin Y", Settings.GetValue("StackY", "10.0"),
+                                        "Stackup table origin Y in millimetres", out stackY);
+            UIElement c3 = LabeledField("Text mm", Settings.GetValue("StackTextH", "1.2"),
+                                        "Stackup table text height in millimetres", out stackTextH);
+
+            Grid.SetColumn(c0, 0); f.Children.Add(c0);
+            Grid.SetColumn(c1, 2); f.Children.Add(c1);
+            Grid.SetColumn(c2, 4); f.Children.Add(c2);
+            Grid.SetColumn(c3, 6); f.Children.Add(c3);
+            sp.Children.Add(f);
+
+            DockPanel actions = new DockPanel();
+            actions.LastChildFill = false;
+            actions.Margin = new Thickness(0, 11, 0, 0);
+
+            Button go = PrimaryButton("Generate stackup table", 32);
+            go.MinWidth = 170;
+            go.Click += delegate { DoStackupTable(); };
+            DockPanel.SetDock(go, Dock.Right);
+            actions.Children.Add(go);
+
+            StackPanel opts = new StackPanel();
+            opts.Orientation = Orientation.Horizontal;
+            opts.VerticalAlignment = VerticalAlignment.Center;
+            stackImperial = SideCheck("mil too", Settings.GetValue("StackImperial", "1") != "0");
+            stackReplace = SideCheck("Replace", Settings.GetValue("StackReplace", "1") != "0");
+            stackReplace.Margin = new Thickness(14, 0, 0, 0);
+            opts.Children.Add(stackImperial);
+            opts.Children.Add(stackReplace);
+            DockPanel.SetDock(opts, Dock.Left);
+            actions.Children.Add(opts);
+
+            sp.Children.Add(actions);
+            card.Child = sp;
+            return card;
+        }
+
+        private UIElement BuildNotesCard()
+        {
+            Border card = CardBorderEl(new Thickness(15, 13, 15, 13));
+            StackPanel sp = new StackPanel();
+
+            sp.Children.Add(Text("Assembly notes", 13, TextPrimary, FontWeights.SemiBold, new Thickness(0)));
+            sp.Children.Add(Wrap("Board size, layer count, measured minimum track and hole, rule clearance — as numbered fab notes.",
+                                 12, TextDim, new Thickness(0, 6, 0, 0)));
+
+            Grid f = new Grid();
+            f.Margin = new Thickness(0, 11, 0, 0);
+            for (int i = 0; i < 7; i++) f.ColumnDefinitions.Add(i % 2 == 0 ? Col() : ColFixed(8));
+
+            UIElement c0 = LabeledCombo("Layer", PcbDraw.DrawableLayers,
+                                        Settings.GetValue("NotesLayer", "Mechanical 1"),
+                                        "Layer to write the fabrication notes on", out notesLayer);
+            UIElement c1 = LabeledField("Origin X", Settings.GetValue("NotesX", "10.0"),
+                                        "Notes origin X in millimetres", out notesX);
+            UIElement c2 = LabeledField("Origin Y", Settings.GetValue("NotesY", "10.0"),
+                                        "Notes origin Y in millimetres", out notesY);
+            UIElement c3 = LabeledField("Finish", Settings.GetValue("NotesFinish", "ENIG"),
+                                        "Surface finish named in the notes", out notesFinish);
+
+            Grid.SetColumn(c0, 0); f.Children.Add(c0);
+            Grid.SetColumn(c1, 2); f.Children.Add(c1);
+            Grid.SetColumn(c2, 4); f.Children.Add(c2);
+            Grid.SetColumn(c3, 6); f.Children.Add(c3);
+            sp.Children.Add(f);
+
+            DockPanel actions = new DockPanel();
+            actions.LastChildFill = false;
+            actions.Margin = new Thickness(0, 11, 0, 0);
+
+            Button go = PrimaryButton("Generate notes", 32);
+            go.MinWidth = 170;
+            go.Click += delegate { DoAssemblyNotes(); };
+            DockPanel.SetDock(go, Dock.Right);
+            actions.Children.Add(go);
+
+            StackPanel opts = new StackPanel();
+            opts.Orientation = Orientation.Horizontal;
+            opts.VerticalAlignment = VerticalAlignment.Center;
+            opts.Children.Add(Text("IPC class", 12, TextDim, FontWeights.Normal, new Thickness(0, 0, 7, 0)));
+
+            notesIpc = new TextBox();
+            notesIpc.Text = Settings.GetValue("NotesIpc", "2");
+            notesIpc.Width = 36;
+            notesIpc.Height = 30;
+            notesIpc.FontFamily = MonoFont;
+            notesIpc.FontSize = 12;
+            notesIpc.Foreground = Hex("#DCDCDC");
+            notesIpc.Background = Field;
+            notesIpc.BorderBrush = FieldBorder;
+            notesIpc.BorderThickness = new Thickness(1);
+            notesIpc.VerticalContentAlignment = VerticalAlignment.Center;
+            notesIpc.HorizontalContentAlignment = HorizontalAlignment.Center;
+            notesIpc.CaretBrush = TextPrimary;
+            AutomationName(notesIpc, "IPC class");
+            opts.Children.Add(notesIpc);
+
+            notesReplace = SideCheck("Replace", Settings.GetValue("NotesReplace", "1") != "0");
+            notesReplace.Margin = new Thickness(14, 0, 0, 0);
+            opts.Children.Add(notesReplace);
+
+            DockPanel.SetDock(opts, Dock.Left);
+            actions.Children.Add(opts);
+
+            sp.Children.Add(actions);
+            card.Child = sp;
+            return card;
+        }
+
+        private UIElement BuildReleaseCard()
+        {
+            Border card = CardBorderEl(new Thickness(15, 13, 15, 13));
+            card.Margin = new Thickness(0, 10, 0, 0);
+            StackPanel sp = new StackPanel();
+
+            StackPanel titleRow = new StackPanel();
+            titleRow.Orientation = Orientation.Horizontal;
+            titleRow.Children.Add(Text("Release candidate package", 13, TextPrimary, FontWeights.SemiBold, new Thickness(0)));
+
+            Border tag = new Border();
+            tag.Background = Hex("#3D3527");
+            tag.BorderBrush = Hex("#5F5130");
+            tag.BorderThickness = new Thickness(1);
+            tag.CornerRadius = new CornerRadius(3);
+            tag.Padding = new Thickness(6, 2, 6, 2);
+            tag.Margin = new Thickness(8, 0, 0, 0);
+            tag.VerticalAlignment = VerticalAlignment.Center;
+            tag.Child = Text("WRITES TO DISK", 10, Hex("#F0C477"), FontWeights.Bold, new Thickness(0));
+            titleRow.Children.Add(tag);
+            sp.Children.Add(titleRow);
+
+            sp.Children.Add(Wrap("Collects the Output Job's files, renames to Project_Rev_YYYYMMDD, zips, verifies the archive reopens, and delivers it. Never overwrites an existing release.",
+                                 12, TextDim, new Thickness(0, 6, 0, 0)));
+
+            // project / revision
+            Grid ids = new Grid();
+            ids.Margin = new Thickness(0, 11, 0, 0);
+            ids.ColumnDefinitions.Add(Col());
+            ids.ColumnDefinitions.Add(ColFixed(8));
+            ids.ColumnDefinitions.Add(ColFixed(150));
+
+            UIElement p0 = LabeledField("Project name", Settings.GetValue("RelProject", ""),
+                                        "Project name used in the archive file name", out relProject);
+            UIElement p1 = LabeledField("Revision", Settings.GetValue("RelRev", "RevA"),
+                                        "Revision used in the archive file name", out relRev);
+            Grid.SetColumn(p0, 0); ids.Children.Add(p0);
+            Grid.SetColumn(p1, 2); ids.Children.Add(p1);
+            sp.Children.Add(ids);
+
+            sp.Children.Add(PathRow("Output Job", Settings.GetValue("RelOutJob", ""),
+                                    "Path to the .OutJob to run", true, out relOutJob));
+            sp.Children.Add(PathRow("Outputs folder", Settings.GetValue("RelOutFolder", ""),
+                                    "Folder the Output Job writes into", false, out relOutFolder));
+            sp.Children.Add(PathRow("Deliver to", Settings.GetValue("RelDest", ""),
+                                    "Destination folder or network share for the release archive", false, out relDest));
+
+            DockPanel actions = new DockPanel();
+            actions.LastChildFill = false;
+            actions.Margin = new Thickness(0, 12, 0, 0);
+
+            Button go = PrimaryButton("Package release", 32);
+            go.MinWidth = 150;
+            go.Click += delegate { DoReleasePackage(false); };
+            DockPanel.SetDock(go, Dock.Right);
+            actions.Children.Add(go);
+
+            Button dry = SecondaryButton("Dry run", 32, 12);
+            dry.MinWidth = 90;
+            dry.Margin = new Thickness(0, 0, 8, 0);
+            dry.Click += delegate { DoReleasePackage(true); };
+            DockPanel.SetDock(dry, Dock.Right);
+            actions.Children.Add(dry);
+
+            StackPanel opts = new StackPanel();
+            opts.Orientation = Orientation.Horizontal;
+            opts.VerticalAlignment = VerticalAlignment.Center;
+
+            // Defaults to OFF. The launch is the one call in this project that
+            // could not be confirmed from SDK metadata, so it is opt-in until
+            // it has been seen to work here.
+            relGenerate = SideCheck("Run the Output Job first", Settings.GetValue("RelGenerate", "0") != "0");
+            opts.Children.Add(relGenerate);
+            DockPanel.SetDock(opts, Dock.Left);
+            actions.Children.Add(opts);
+
+            sp.Children.Add(actions);
+            card.Child = sp;
+            return card;
+        }
+
+        // label + path box + Browse, as one row
+        private UIElement PathRow(string label, string initial, string automation,
+                                  bool pickFile, out TextBox box)
+        {
+            StackPanel sp = new StackPanel();
+            sp.Margin = new Thickness(0, 9, 0, 0);
+            sp.Children.Add(Text(label, 11, TextDim, FontWeights.Normal, new Thickness(0, 0, 0, 5)));
+
+            DockPanel row = new DockPanel();
+            row.LastChildFill = true;
+
+            TextBox tb = new TextBox();
+            tb.Text = initial;
+            tb.Height = 30;
+            tb.FontFamily = MonoFont;
+            tb.FontSize = 12;
+            tb.Foreground = Hex("#DCDCDC");
+            tb.Background = Field;
+            tb.BorderBrush = FieldBorder;
+            tb.BorderThickness = new Thickness(1);
+            tb.Padding = new Thickness(7, 0, 7, 0);
+            tb.VerticalContentAlignment = VerticalAlignment.Center;
+            tb.CaretBrush = TextPrimary;
+            AutomationName(tb, automation);
+
+            TextBox captured = tb;
+            bool wantFile = pickFile;
+            Button browse = SecondaryButton("Browse", 30, 12);
+            browse.Margin = new Thickness(7, 0, 0, 0);
+            browse.Click += delegate
+            {
+                string chosen = wantFile
+                    ? Settings.PickFile("Choose the Output Job", "Output Job (*.OutJob)|*.OutJob|All files (*.*)|*.*")
+                    : Settings.PickOutputFolder("Choose a folder");
+                if (chosen != null) captured.Text = chosen;
+            };
+            DockPanel.SetDock(browse, Dock.Right);
+            row.Children.Add(browse);
+            row.Children.Add(tb);
+
+            sp.Children.Add(row);
+            box = tb;
+            return sp;
+        }
+
+        private UIElement LabeledCombo(string label, string[] items, string selected,
+                                       string automation, out ComboBox combo)
+        {
+            StackPanel sp = new StackPanel();
+            sp.Children.Add(Text(label, 11, TextDim, FontWeights.Normal, new Thickness(0, 0, 0, 5)));
+
+            ComboBox cb = new ComboBox();
+            cb.Height = 30;
+            cb.FontFamily = MonoFont;
+            cb.FontSize = 12;
+            cb.Foreground = Hex("#DCDCDC");
+            cb.Background = Field;
+            cb.BorderBrush = FieldBorder;
+            cb.BorderThickness = new Thickness(1);
+            cb.VerticalContentAlignment = VerticalAlignment.Center;
+
+            int pick = 0;
+            for (int i = 0; i < items.Length; i++)
+            {
+                cb.Items.Add(items[i]);
+                if (string.Equals(items[i], selected, StringComparison.OrdinalIgnoreCase)) pick = i;
+            }
+            cb.SelectedIndex = pick;
+            AutomationName(cb, automation);
+
+            sp.Children.Add(cb);
+            combo = cb;
+            return sp;
         }
 
         private UIElement BuildExportColumn()
@@ -1106,6 +1451,236 @@ namespace AltiumSpike
             Settings.SetValue("FenceNet", opt.NetName);
             Settings.SetValue("FenceLeft", opt.LeftSide ? "1" : "0");
             Settings.SetValue("FenceRight", opt.RightSide ? "1" : "0");
+        }
+
+        // ---------------- fabrication handlers ----------------
+
+        private void DoStackupTable()
+        {
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetBoard(out pcbServer, out board))
+                { SetStatus("No active PCB document", Amber); return; }
+
+                StackupTable.Options opt = new StackupTable.Options();
+                opt.LayerName = stackLayer.SelectedItem as string;
+
+                if (!TryMM(stackX.Text, out opt.OriginXMM)) { Complain("Origin X is not a number."); return; }
+                if (!TryMM(stackY.Text, out opt.OriginYMM)) { Complain("Origin Y is not a number."); return; }
+                if (!TryMM(stackTextH.Text, out opt.TextHeightMM) || opt.TextHeightMM <= 0.0)
+                { Complain("Text height must be a number greater than 0."); return; }
+
+                opt.ImperialToo = stackImperial.IsChecked == true;
+                opt.ReplaceExisting = stackReplace.IsChecked == true;
+
+                Settings.SetValue("StackLayer", opt.LayerName);
+                Settings.SetValue("StackX", stackX.Text.Trim());
+                Settings.SetValue("StackY", stackY.Text.Trim());
+                Settings.SetValue("StackTextH", stackTextH.Text.Trim());
+                Settings.SetValue("StackImperial", opt.ImperialToo ? "1" : "0");
+                Settings.SetValue("StackReplace", opt.ReplaceExisting ? "1" : "0");
+
+                StackupTable.Result r = StackupTable.Generate(pcbServer, board, opt);
+
+                if (r.Rows == 0)
+                {
+                    ShowResult("No stackup table drawn", Amber,
+                               r.Errors.Count > 0 ? r.Errors.ToArray() : new string[] { "The physical stack is empty." });
+                    SetStatus("No stackup table drawn", Amber);
+                    return;
+                }
+
+                List<string> lines = new List<string>();
+                lines.Add(r.Rows + " layer(s) on " + opt.LayerName + ", " + r.PrimitivesDrawn + " primitives");
+                lines.Add("finished thickness " + r.BoardThicknessMM.ToString("0.000", CultureInfo.InvariantCulture) +
+                          " mm (" + (r.BoardThicknessMM / 0.0254).ToString("0.0", CultureInfo.InvariantCulture) + " mil)");
+                lines.Add("table is " + r.WidthMM.ToString("0.0", CultureInfo.InvariantCulture) + " x " +
+                          r.HeightMM.ToString("0.0", CultureInfo.InvariantCulture) + " mm from (" +
+                          opt.OriginXMM.ToString("0.#", CultureInfo.InvariantCulture) + ", " +
+                          opt.OriginYMM.ToString("0.#", CultureInfo.InvariantCulture) + ")");
+                if (r.PrimitivesRemoved > 0)
+                    lines.Add("replaced a previous table (" + r.PrimitivesRemoved + " primitives removed)");
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult("Stackup table drawn", Green, lines.ToArray());
+                SetStatus(r.Rows + " stack layers drawn on " + opt.LayerName, Green);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow.DoStackupTable", ex);
+                ShowResult("Stackup table failed", Red, ex.GetType().Name + " — " + ex.Message);
+                SetStatus("Stackup table failed", Red);
+            }
+        }
+
+        private void DoAssemblyNotes()
+        {
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetBoard(out pcbServer, out board))
+                { SetStatus("No active PCB document", Amber); return; }
+
+                AssemblyNotes.Options opt = new AssemblyNotes.Options();
+                opt.LayerName = notesLayer.SelectedItem as string;
+
+                if (!TryMM(notesX.Text, out opt.OriginXMM)) { Complain("Origin X is not a number."); return; }
+                if (!TryMM(notesY.Text, out opt.OriginYMM)) { Complain("Origin Y is not a number."); return; }
+
+                string finish = (notesFinish.Text ?? "").Trim();
+                if (finish.Length > 0) opt.SurfaceFinish = finish;
+
+                string ipc = (notesIpc.Text ?? "").Trim();
+                if (ipc.Length > 0) opt.IpcClass = ipc;
+
+                opt.ReplaceExisting = notesReplace.IsChecked == true;
+
+                Settings.SetValue("NotesLayer", opt.LayerName);
+                Settings.SetValue("NotesX", notesX.Text.Trim());
+                Settings.SetValue("NotesY", notesY.Text.Trim());
+                Settings.SetValue("NotesFinish", opt.SurfaceFinish);
+                Settings.SetValue("NotesIpc", opt.IpcClass);
+                Settings.SetValue("NotesReplace", opt.ReplaceExisting ? "1" : "0");
+
+                AssemblyNotes.Result r = AssemblyNotes.Generate(pcbServer, board, opt);
+
+                if (r.NotesWritten == 0)
+                {
+                    ShowResult("No notes written", Amber,
+                               r.Errors.Count > 0 ? r.Errors.ToArray() : new string[] { "Nothing to write." });
+                    SetStatus("No notes written", Amber);
+                    return;
+                }
+
+                CultureInfo inv = CultureInfo.InvariantCulture;
+                List<string> lines = new List<string>();
+                lines.Add(r.NotesWritten + " note(s) on " + opt.LayerName);
+                lines.Add("board " + r.Stats.WidthMM.ToString("0.00", inv) + " x " +
+                          r.Stats.HeightMM.ToString("0.00", inv) + " mm, " +
+                          r.Stats.SignalLayers + " copper layer(s)");
+
+                // Measured and specified are reported separately on purpose --
+                // they answer different questions and a fab quote depends on
+                // knowing which is which.
+                lines.Add(double.IsNaN(r.Stats.MinTrackMM)
+                    ? "narrowest track: none found"
+                    : "narrowest track measured " + r.Stats.MinTrackMM.ToString("0.000", inv) + " mm");
+                lines.Add(double.IsNaN(r.Stats.MinClearanceMM)
+                    ? "min clearance: no enabled rule"
+                    : "min clearance per rules " + r.Stats.MinClearanceMM.ToString("0.000", inv) + " mm");
+                lines.Add(double.IsNaN(r.Stats.MinHoleMM)
+                    ? "smallest hole: none found"
+                    : "smallest hole measured " + r.Stats.MinHoleMM.ToString("0.000", inv) + " mm");
+
+                if (r.PrimitivesRemoved > 0)
+                    lines.Add("replaced previous notes (" + r.PrimitivesRemoved + " primitives removed)");
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult("Assembly notes written", Green, lines.ToArray());
+                SetStatus(r.NotesWritten + " notes on " + opt.LayerName, Green);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow.DoAssemblyNotes", ex);
+                ShowResult("Assembly notes failed", Red, ex.GetType().Name + " — " + ex.Message);
+                SetStatus("Assembly notes failed", Red);
+            }
+        }
+
+        private void DoReleasePackage(bool dryRun)
+        {
+            try
+            {
+                ReleaseBundle.Options opt = new ReleaseBundle.Options();
+                opt.ProjectName = (relProject.Text ?? "").Trim();
+                opt.Revision = (relRev.Text ?? "").Trim();
+                opt.OutJobPath = (relOutJob.Text ?? "").Trim();
+                opt.OutputFolder = (relOutFolder.Text ?? "").Trim();
+                opt.DestinationFolder = (relDest.Text ?? "").Trim();
+                opt.GenerateOutputs = relGenerate.IsChecked == true;
+                opt.DryRun = dryRun;
+                opt.Stamp = DateTime.Now;
+
+                if (opt.ProjectName.Length == 0)
+                {
+                    // Falling back to the document name beats refusing, and
+                    // beats silently shipping an archive called Project_*.zip.
+                    opt.ProjectName = CurrentDocumentStem();
+                    if (opt.ProjectName.Length == 0) { Complain("Enter a project name."); return; }
+                    relProject.Text = opt.ProjectName;
+                }
+
+                Settings.SetValue("RelProject", opt.ProjectName);
+                Settings.SetValue("RelRev", opt.Revision);
+                Settings.SetValue("RelOutJob", opt.OutJobPath);
+                Settings.SetValue("RelOutFolder", opt.OutputFolder);
+                Settings.SetValue("RelDest", opt.DestinationFolder);
+                Settings.SetValue("RelGenerate", opt.GenerateOutputs ? "1" : "0");
+
+                ReleaseBundle.Result r = ReleasePackager.Package(client, opt);
+
+                foreach (string d in r.Diagnostics) Log.Write("ReleasePackager: " + d);
+
+                List<string> lines = new List<string>();
+                lines.Add(ReleaseBundle.ArchiveName(opt));
+                lines.Add(r.FilesCollected + " file(s), " + ReleaseBundle.Human(r.BytesCollected) +
+                          (r.ArchiveBytes > 0 ? " → " + ReleaseBundle.Human(r.ArchiveBytes) + " zipped" : ""));
+                if (r.EntriesVerified > 0)
+                    lines.Add("archive reopened and verified — " + r.EntriesVerified + " entries");
+                if (r.Generated) lines.Add("Output Job was launched before packaging");
+                if (r.Skipped.Count > 0)
+                    lines.Add(r.Skipped.Count + " file(s) skipped by the extension filter");
+                if (r.Ok && !r.WasDryRun) lines.Add("delivered to " + r.ArchivePath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                if (r.WasDryRun)
+                {
+                    lines.Insert(0, "Nothing was written.");
+                    ShowResult("Dry run", Amber, lines.ToArray());
+                    SetStatus("Dry run — " + r.FilesCollected + " files would be packaged", Amber);
+                }
+                else if (r.Ok)
+                {
+                    ShowResult("Release packaged", Green, lines.ToArray());
+                    SetStatus("Delivered " + r.ArchiveName, Green);
+                }
+                else
+                {
+                    ShowResult("Release failed", Red, lines.ToArray());
+                    SetStatus("Release failed", Red);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SpikeWindow.DoReleasePackage", ex);
+                ShowResult("Release failed", Red, ex.GetType().Name + " — " + ex.Message);
+                SetStatus("Release failed", Red);
+            }
+        }
+
+        // The PCB document's own file name, minus extension, as a project
+        // name default.
+        private string CurrentDocumentStem()
+        {
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetBoard(out pcbServer, out board)) return "";
+                string name = board.GetState_FileName();
+                if (string.IsNullOrEmpty(name)) return "";
+                return System.IO.Path.GetFileNameWithoutExtension(name);
+            }
+            catch { return ""; }
+        }
+
+        private void Complain(string message)
+        {
+            ShowResult("Check the settings", Amber, message);
+            SetStatus(message, Amber);
         }
 
         private void ShowResult(string title, Brush accent, params string[] lines)
