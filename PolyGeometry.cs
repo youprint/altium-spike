@@ -101,6 +101,45 @@ namespace AltiumSpike
             return designator.Substring(0, i);
         }
 
+        // Area enclosed by a closed polyline, by the shoelace formula.
+        //
+        // Always positive: winding order decides the sign and nobody drawing a
+        // pour cares which way round they went. The polygon is treated as
+        // closed whether or not the last vertex repeats the first.
+        //
+        // This exists because IPCB_Polygon.GetState_AreaSize() reads back as
+        // zero on a poured polygon -- observed on a real board -- and a copper
+        // area report of 0.00 mm2 for a pour that visibly covers the board is
+        // worse than no report at all. The outline is there to be measured, so
+        // measure it.
+        //
+        // Arc segments in the outline are approximated by their chords, so a
+        // pour with rounded corners reads very slightly small.
+        public static double PolygonArea(IList<double> vx, IList<double> vy)
+        {
+            if (vx == null || vy == null) return 0;
+            int n = Math.Min(vx.Count, vy.Count);
+            if (n < 3) return 0;
+
+            double sum = 0;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+                sum += (vx[j] + vx[i]) * (vy[j] - vy[i]);
+
+            return Math.Abs(sum) / 2.0;
+        }
+
+        // Length of a circular arc, given its radius and the angles in degrees
+        // that Altium reports. Handles the wrap at 360 that a plain
+        // (end - start) gets wrong for any arc crossing due east.
+        public static double ArcLength(double radius, double startDeg, double endDeg)
+        {
+            if (radius <= 0) return 0;
+            double sweep = endDeg - startDeg;
+            while (sweep < 0) sweep += 360.0;
+            while (sweep > 360.0) sweep -= 360.0;
+            return radius * sweep * Math.PI / 180.0;
+        }
+
         // Row number for each Y, so a row of 0402s whose origins differ by
         // 20 um is numbered as one row rather than scattered by a raw Y sort.
         //

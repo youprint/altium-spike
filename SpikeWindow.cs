@@ -166,6 +166,9 @@ namespace AltiumSpike
         // polygons
         private CheckBox rpStale, rpSel;
 
+        // connectivity
+        private CheckBox ucSelect;
+
         // testpoints
         private TextBox tpClass, pcTol;
         private CheckBox tpPads, tpAssembly, tpUncovered;
@@ -1724,8 +1727,22 @@ namespace AltiumSpike
 
         private UIElement BuildCleanupSection()
         {
-            return Stack(BuildInvalidCard(), BuildAntennaCard(), BuildDanglingCard(),
+            return Stack(BuildUnnettedCard(), BuildInvalidCard(), BuildAntennaCard(), BuildDanglingCard(),
                          BuildDuplicateCard(), BuildLockRoutingCard());
+        }
+
+        private UIElement BuildUnnettedCard()
+        {
+            ucSelect = SideCheck("Select it", Settings.GetValue("UcSelect", "1") != "0");
+
+            return ToolCard("Unnetted copper", "BREAKS OTHER CHECKS", Hex("#3D2A2A"), Hex("#5F3535"), Hex("#E89797"),
+                "Copper that belongs to no net. It looks completely normal on screen, and it is invisible " +
+                "to every rule scoped by net or class, contributes nothing to routed length, and connects " +
+                "nothing as far as Altium is concerned. It comes from imports and from copy-paste between " +
+                "documents. Run this first when current capacity, dangling copper or net lengths come back " +
+                "empty — on a board whose copper has no net, all three have nothing to work with. The fix " +
+                "is Design > Netlist > Update Free Primitives From Component Pads.",
+                null, ActionRow(Go("Find unnetted copper", DoUnnetted), 178, ucSelect));
         }
 
         private UIElement BuildDuplicateCard()
@@ -1899,6 +1916,14 @@ namespace AltiumSpike
                     "Pin pairs that still have unrouted length. Net-level state is no use here — a net counts " +
                     "as routed as soon as any copper is on it, so a fly-by net missing one hop looks finished.",
                     null, ActionRow(Go("Export unrouted", DoUnrouted), 168)),
+
+                ToolCard("Measured net lengths", null, null, null, null,
+                    "Routed length per net summed from the copper itself — track lengths by Pythagoras, " +
+                    "arc lengths by radius and sweep — next to the length Altium reports. It needs no " +
+                    "connectivity analysis, so it still works when the reported figure comes back as zero. " +
+                    "A net where the two disagree is telling you its copper and its connectivity model " +
+                    "have come apart.",
+                    null, ActionRow(Go("Measure net lengths", DoMeasureNets), 190)),
 
                 ToolCard("Net class report", null, null, null, null,
                     "Every net class with its members, and — separately — the nets belonging to no class at " +
@@ -3546,6 +3571,59 @@ namespace AltiumSpike
                 SetStatus(r.Changed + " repoured", r.Changed > 0 ? Green : Amber);
             }
             catch (Exception ex) { Fail("Repour polygons", ex); }
+        }
+
+        private void DoUnnetted()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                bool sel = ucSelect.IsChecked == true;
+                Settings.SetValue("UcSelect", sel ? "1" : "0");
+
+                Connectivity.CacheCopperLayers(s, b);
+                Connectivity.Result r = Connectivity.UnnettedCopper(s, b, folder, sel);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                if (r.CsvPath.Length > 0) lines.Add(r.CsvPath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult(r.Found == 0 ? "All copper is on a net" : "Unnetted copper found",
+                           r.Found == 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Found == 0 ? "All copper netted" : r.Found + " unnetted primitives",
+                          r.Found == 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Unnetted copper", ex); }
+        }
+
+        private void DoMeasureNets()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                Connectivity.CacheCopperLayers(s, b);
+                Connectivity.Result r = Connectivity.MeasureNets(s, b, folder);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                if (r.CsvPath.Length > 0) lines.Add(r.CsvPath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult("Measured net lengths written", Green, lines.ToArray());
+                SetStatus(r.Found + " nets measured", Green);
+            }
+            catch (Exception ex) { Fail("Measure net lengths", ex); }
         }
 
         private void DoSilkOverPads()

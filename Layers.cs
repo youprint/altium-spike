@@ -402,6 +402,26 @@ namespace AltiumSpike
                 IPCB_LayerStack stack = board.GetState_LayerStack();
                 if (stack == null) { res.Errors.Add("This board has no layer stack."); return res; }
 
+                // WHICH LAYERS ARE COPPER IS ASKED, NOT INFERRED FROM A CAST.
+                // Every physical layer on this SDK casts successfully to
+                // IPCB_ElectricalLayer -- paste, overlay, solder mask and the
+                // core included -- so a cast test labelled all nine layers of
+                // a 2-layer board "Copper" and never read the core's height,
+                // which is how a 1.6 mm board reported a 0.070 mm finished
+                // thickness. The electrical class is the authority.
+                HashSet<string> electrical = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                try
+                {
+                    IPCB_LayerObject e = stack.First(TLayerClassID.eLayerClass_Electrical);
+                    int eguard = 0;
+                    while (e != null && eguard++ < 256)
+                    {
+                        try { electrical.Add(e.GetState_LayerName() ?? ""); } catch { }
+                        e = stack.Next(TLayerClassID.eLayerClass_Electrical, e);
+                    }
+                }
+                catch { }
+
                 IPCB_LayerObject lo = stack.First(TLayerClassID.eLayerClass_Physical);
                 int index = 0, guard = 0;
                 double total = 0.0;
@@ -417,7 +437,7 @@ namespace AltiumSpike
                     IPCB_ElectricalLayer el = lo as IPCB_ElectricalLayer;
                     IPCB_DielectricLayer dl = lo as IPCB_DielectricLayer;
 
-                    if (el != null)
+                    if (el != null && electrical.Contains(name))
                     {
                         kind = "Copper";
                         material = "Copper";

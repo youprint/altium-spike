@@ -63,6 +63,15 @@ namespace AltiumSpike
             public List<string> Errors = new List<string>();
         }
 
+        // One coord is CoordToMMs(1) mm, so an area in square coords converts
+        // by that ratio squared. Computed from a large value to keep the
+        // integer conversion's own rounding out of the ratio.
+        private static double SqCoordToMM2(double sq)
+        {
+            double mmPerCoord = EDP.Utils.CoordToMMs(1000000) / 1000000.0;
+            return sq * mmPerCoord * mmPerCoord;
+        }
+
         private static string PourOver(int v)
         {
             if (v == 0) return "Don't pour over";
@@ -127,7 +136,10 @@ namespace AltiumSpike
                         double area = 0;
                         try { dead = p.GetState_RemoveDead(); } catch { }
                         try { islands = p.GetState_RemoveIslandsByArea(); } catch { }
-                        try { islandThresh = p.GetState_IslandAreaThreshold(); } catch { }
+                        // Square COORDS, not mm2. Read raw it prints as
+                        // 250000000000 for a 1.6 mm2 threshold, which reads
+                        // like a corrupt value rather than a setting.
+                        try { islandThresh = SqCoordToMM2(p.GetState_IslandAreaThreshold()); } catch { }
                         try { necks = p.GetState_RemoveNarrowNecks(); } catch { }
                         try { neckW = p.GetState_NeckWidthThreshold(); } catch { }
                         try { track = p.GetState_TrackSize(); } catch { }

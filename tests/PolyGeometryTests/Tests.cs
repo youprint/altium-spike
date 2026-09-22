@@ -224,6 +224,48 @@ namespace PolyTest
             }
 
             // ---------------------------------------------------------------
+            Section("Polygon area");
+            Rect(out vx, out vy);
+            Near(PolyGeometry.PolygonArea(vx, vy), 60 * 33, 1e-9, "the 60 x 33 rectangle is 1980 mm2");
+
+            {
+                // Winding order must not flip the sign -- nobody drawing a
+                // pour cares which way round they went.
+                List<double> cw = new List<double> { 0, 0, 60, 60 };
+                List<double> cy2 = new List<double> { 0, 33, 33, 0 };
+                Near(PolyGeometry.PolygonArea(cw, cy2), 60 * 33, 1e-9, "clockwise gives the same positive area");
+            }
+
+            Ell(out vx, out vy);
+            // 60 x 40 less the 30 x 20 notch = 2400 - 600 = 1800.
+            Near(PolyGeometry.PolygonArea(vx, vy), 1800, 1e-9, "the L-shape is 1800 mm2, notch removed");
+
+            {
+                List<double> tx = new List<double> { 0, 10, 0 };
+                List<double> ty = new List<double> { 0, 0, 10 };
+                Near(PolyGeometry.PolygonArea(tx, ty), 50, 1e-9, "a right triangle is half the rectangle");
+            }
+            {
+                // A closing vertex that repeats the first must not double-count.
+                List<double> sx = new List<double> { 0, 10, 10, 0, 0 };
+                List<double> sy = new List<double> { 0, 0, 10, 10, 0 };
+                Near(PolyGeometry.PolygonArea(sx, sy), 100, 1e-9, "an explicitly closed square is still 100");
+            }
+            Near(PolyGeometry.PolygonArea(null, null), 0, 1e-9, "null is 0, not a crash");
+            Near(PolyGeometry.PolygonArea(new List<double> { 0, 1 }, new List<double> { 0, 1 }), 0, 1e-9,
+                 "two points enclose nothing");
+
+            // ---------------------------------------------------------------
+            Section("Arc length");
+            Near(PolyGeometry.ArcLength(10, 0, 360), 2 * Math.PI * 10, 1e-9, "a full circle is the circumference");
+            Near(PolyGeometry.ArcLength(10, 0, 90), Math.PI * 10 / 2, 1e-9, "a quarter turn is a quarter of it");
+            Near(PolyGeometry.ArcLength(10, 90, 0), 2 * Math.PI * 10 * 0.75, 1e-9,
+                 "90 to 0 wraps the long way round, not negative");
+            Near(PolyGeometry.ArcLength(10, 350, 10), 2 * Math.PI * 10 / 18, 1e-9,
+                 "an arc crossing due east is 20 degrees, not -340");
+            Near(PolyGeometry.ArcLength(0, 0, 90), 0, 1e-9, "a zero radius has no length");
+
+            // ---------------------------------------------------------------
             Console.WriteLine();
             Console.WriteLine("passed " + passed + ", failed " + failed);
             return failed == 0 ? 0 : 1;

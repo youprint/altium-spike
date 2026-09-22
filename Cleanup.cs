@@ -142,6 +142,7 @@ namespace AltiumSpike
             public int Found;
             public int Removed;
             public int Scanned;
+            public int SkippedNoNet;
             public bool Selected;
             public List<string> Notes = new List<string>();
             public List<string> Errors = new List<string>();
@@ -273,6 +274,7 @@ namespace AltiumSpike
                     {
                         IPCB_Net n = p.GetState_Net();
                         string net = n == null ? "" : (n.GetState_Name() ?? "");
+                        if (net.Length == 0) res.SkippedNoNet++;
                         if (net.Length > 0)
                         {
                             string layer = "";
@@ -428,6 +430,7 @@ namespace AltiumSpike
                     {
                         IPCB_Net n = p.GetState_Net();
                         string net = n == null ? "" : (n.GetState_Name() ?? "");
+                        if (net.Length == 0) res.SkippedNoNet++;
                         if (net.Length > 0)
                         {
                             string layer = "";
@@ -482,6 +485,20 @@ namespace AltiumSpike
             finally { board.BoardIterator_Destroy(ref it); }
 
             res.Scanned = owners.Count;
+
+            // Endpoints are only collected for NETTED copper, because the
+            // check asks whether a track end meets something on the same net.
+            // On a board whose copper carries no net that yields nothing at
+            // all, and a silent zero reads as "clean" when it means "not
+            // checked". Say which it was.
+            if (owners.Count == 0 && res.SkippedNoNet > 0)
+            {
+                res.Errors.Add("Nothing was checked: all " + res.SkippedNoNet + " copper primitive(s) " +
+                               "carry no net, and this check compares endpoints within a net. " +
+                               "Run the unnetted copper report first.");
+                Log.Write("Cleanup.DanglingCopper: nothing checked, " + res.SkippedNoNet + " unnetted");
+                return res;
+            }
 
             HashSet<IPCB_Primitive> dangling = new HashSet<IPCB_Primitive>();
             for (int i = 0; i < owners.Count; i++)

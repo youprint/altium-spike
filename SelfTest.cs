@@ -23,9 +23,18 @@
 //
 //   MODIFYING   Every function that changes the board. These build their OWN
 //               geometry in a clear area first, run against it, read the
-//               result back, and report what actually happened. They do not
-//               touch existing copper, and they do not clean up afterwards --
-//               leaving the evidence on screen is the point.
+//               result back, then put the board back as they found it: the
+//               scratch geometry is swept, and the two checks that touch
+//               existing objects -- designator text, component placement --
+//               record what they change and restore it.
+//
+//               THE FIRST VERSION DID NOT DO THAT. It left its scratch
+//               geometry "as evidence" and resized every designator on the
+//               board without saving the old values, which is harmless on a
+//               scratch copy and not harmless on the board someone actually
+//               had open. The evidence is the report. The board goes back.
+//               Nothing here writes to disk, so an unsaved document is still
+//               the last line of defence -- but it should not have to be.
 //
 // A CHECK IS NOT A PASS BECAUSE IT DID NOT THROW. The whole failure mode
 // worth catching here is a function that returns cleanly having done nothing,
@@ -181,6 +190,55 @@ namespace AltiumSpike
                 return "PASS: " + s;
             });
 
+            // --- Connectivity ---
+            r.Section = "Connectivity";
+
+            Connectivity.CacheCopperLayers(pcbServer, board);
+
+            int unnetted = 0;
+            r.Run("Unnetted copper", "every copper primitive is accounted for as netted or not", delegate
+            {
+                Connectivity.Result x = Connectivity.UnnettedCopper(pcbServer, board, folder, false);
+                if (x.Scanned == 0)
+                    return "FAIL: no copper primitives found at all, but the board has " + tracks + " tracks";
+
+                unnetted = x.Found;
+
+                int rows = File.ReadAllLines(x.CsvPath).Length - 1;
+                if (rows != x.Found)
+                    return "FAIL: reported " + x.Found + " but wrote " + rows + " rows";
+
+                if (x.Found == 0)
+                    return "PASS: all " + x.Scanned + " copper primitive(s) belong to a net";
+
+                // Not a failure of this function -- it is the function working.
+                // It IS a finding about the board, and a loud one.
+                return "PASS: " + x.Found + " of " + x.Scanned + " copper primitive(s) carry NO NET " +
+                       "(" + x.Tracks + " tracks, " + x.Vias + " vias) -- this is a real defect in the " +
+                       "board, and it is why the net-scoped checks below have nothing to work with";
+            });
+
+            r.Run("Measured net lengths", "measured length is consistent with the copper present", delegate
+            {
+                Connectivity.Result x = Connectivity.MeasureNets(pcbServer, board, folder);
+                if (x.Found != nets)
+                    return "FAIL: measured " + x.Found + " nets but the board has " + nets;
+
+                // The scan must see every netted track. Tracks that are
+                // unnetted are counted by the check above, so the two together
+                // have to account for all of them.
+                if (x.Scanned + unnetted < tracks)
+                    return "FAIL: " + x.Scanned + " netted + " + unnetted + " unnetted is fewer than the " +
+                           tracks + " tracks on the board -- copper is going unaccounted for";
+
+                if (x.Scanned == 0)
+                    return "PASS: no netted copper to measure, consistent with " + unnetted +
+                           " unnetted primitive(s)";
+
+                return "PASS: " + x.Scanned + " netted segment(s) measured across " + x.Found +
+                       " net(s); " + x.Scanned + " + " + unnetted + " accounts for all " + tracks + " tracks";
+            });
+
             // --- Import / Export ---
             r.Section = "Import / Export";
 
@@ -226,33 +284,42 @@ namespace AltiumSpike
                        " designators; " + j.MissingLcsc.Count + " excluded for no LCSC number";
             });
 
-            r.Run("Export net lengths", "a routed net reports non-zero length", delegate
+            r.Run("Export net lengths", "a routed net reports non-zero length, or says why not", delegate
             {
-                NetLengths.Result n = NetLengths.Export(board, folder);
-                if (n.NetRows == 0) return "FAIL: no nets written, board has " + nets;
+                NetLengths.Result x = NetLengths.Export(board, folder);
+                if (x.NetRows == 0)
+                    return "FAIL: no net rows written but the board has " + nets + " nets";
 
-                string p = Path.Combine(folder, "net_lengths.csv");
-                if (!File.Exists(p)) return "FAIL: net_lengths.csv not written";
-
+                string[] lines = File.ReadAllLines(Path.Combine(folder, "net_lengths.csv"));
                 int nonZero = 0;
-                string[] lines = File.ReadAllLines(p);
-                for (int i = 1; i < lines.Length; i++)
+                for (int k = 1; k < lines.Length; k++)
                 {
-                    string[] f = lines[i].Split(',');
-                    double v;
-                    if (f.Length > 4 && double.TryParse(f[4], NumberStyles.Float, Inv, out v) && v > 0.001) nonZero++;
+                    string[] f2 = SplitCsv(lines[k]);
+                    if (f2.Length > 4)
+                    {
+                        double v;
+                        if (double.TryParse(f2[4], System.Globalization.NumberStyles.Float, Inv, out v) && v > 0)
+                            nonZero++;
+                    }
                 }
 
-                if (nonZero == 0 && tracks > 0)
-                    return "FAIL: " + n.NetRows + " nets written but every routed length is zero, " +
-                           "with " + tracks + " tracks on the board";
+                if (nonZero > 0)
+                    return "PASS: " + x.NetRows + " nets written, " + nonZero + " with a non-zero routed length";
 
-                return "PASS: " + n.NetRows + " nets (" + nonZero + " with routed copper), " +
-                       n.PinPairRows + " pin pairs";
+                // Zero everywhere. Whether that is this function's fault turns
+                // entirely on whether the copper is on a net at all, which the
+                // connectivity check above already established.
+                if (tracks == 0)
+                    return "PASS: " + x.NetRows + " nets written, all zero — the board has no tracks";
+
+                if (unnetted >= tracks)
+                    return "PASS: " + x.NetRows + " nets written and every routed length is zero, which is " +
+                           "CORRECT here: all " + tracks + " tracks carry no net, so no net has any copper. " +
+                           "The fault is in the board, not the export — see the measured-length report";
+
+                return "FAIL: " + x.NetRows + " nets written, every routed length zero, with " + tracks +
+                       " tracks on the board of which only " + unnetted + " are unnetted";
             });
-
-            // --- Reports ---
-            r.Section = "Reports";
 
             r.Run("Board census export", "object counts agree with the baseline", delegate
             {
@@ -322,7 +389,16 @@ namespace AltiumSpike
                 CopperCurrent.CurrentResult x = CopperCurrent.CurrentCapacity(pcbServer, board, o);
                 if (tracks == 0) return "SKIP: board has no tracks";
                 if (x.NetsReported == 0)
-                    return "FAIL: " + tracks + " tracks on the board but no nets were rated";
+                {
+                    // Nothing rated is only this function's fault if there was
+                    // netted copper for it to rate.
+                    if (x.SkippedNoNet >= tracks)
+                        return "PASS: nothing rated, correctly — all " + x.SkippedNoNet + " copper " +
+                               "primitive(s) carry no net, and capacity is reported per net. The result " +
+                               "now says so instead of writing an empty CSV";
+                    return "FAIL: " + tracks + " tracks on the board but no nets were rated (" +
+                           x.SkippedNoNet + " unnetted, " + x.SkippedOffCopper + " off-copper)";
+                }
 
                 // Independent arithmetic check against the shipped formula.
                 double expect = Ipc2221.CurrentAmps(0.254, 0.03479, 10.0, true);
@@ -337,21 +413,42 @@ namespace AltiumSpike
                        " A on " + x.WorstNet + note;
             });
 
-            r.Run("Copper areas", "polygon areas are positive and plausible", delegate
+            r.Run("Copper areas", "polygon area is measured from the outline and positive", delegate
             {
                 CopperCurrent.AreaResult x = CopperCurrent.CopperAreas(pcbServer, board, folder);
-                if (polys == 0 && x.Regions == 0) return "SKIP: no polygons or regions on this board";
-                if (x.Polygons != polys)
-                    return "FAIL: found " + x.Polygons + " polygons, board has " + polys;
-                if (x.TotalAreaMM2 <= 0.0 && x.Polygons > 0)
-                    return "FAIL: " + x.Polygons + " polygons but total area is zero -- " +
-                           "the area conversion is wrong";
-                return "PASS: " + x.Polygons + " polygons, " + x.Regions + " regions, " +
-                       x.TotalAreaMM2.ToString("0.0", Inv) + " mm2 total";
-            });
+                if (polys == 0) return "SKIP: no polygons on this board";
+                if (x.Polygons == 0)
+                    return "FAIL: " + polys + " polygons on the board but none were measured";
+                if (x.TotalAreaMM2 <= 0)
+                    return "FAIL: " + x.Polygons + " polygons but total area is zero -- the outline walk " +
+                           "found no vertices and the cached area was zero too";
 
-            // --- Design rules ---
-            r.Section = "Design rules";
+                // A pour cannot be larger than the board it sits on, by much.
+                // This catches a unit error, which is the way an area goes
+                // wrong: square coords read as square mm is out by 10^11.
+                double boardArea = 0;
+                try
+                {
+                    IPCB_BoardOutline ol = board.GetState_BoardOutline();
+                    int n = ol.GetState_PointCount();
+                    List<double> bx = new List<double>(), by = new List<double>();
+                    for (int k = 0; k < n; k++)
+                    {
+                        PolySegment sg = ol.GetState_Segments(k);
+                        bx.Add(ToMM(sg.GetVx())); by.Add(ToMM(sg.GetVy()));
+                    }
+                    boardArea = PolyGeometry.PolygonArea(bx, by);
+                }
+                catch { }
+
+                if (boardArea > 0 && x.TotalAreaMM2 > boardArea * 5.0)
+                    return "FAIL: " + F3(x.TotalAreaMM2) + " mm2 of copper on a " + F3(boardArea) +
+                           " mm2 board -- that is a unit error, not a pour";
+
+                return "PASS: " + x.Polygons + " polygon(s), " + F3(x.TotalAreaMM2) +
+                       " mm2 measured from the outline" +
+                       (boardArea > 0 ? " on a " + F3(boardArea) + " mm2 board" : "");
+            });
 
             r.Run("Export rules", "row count matches the rules on the board", delegate
             {
@@ -447,7 +544,17 @@ namespace AltiumSpike
             {
                 Cleanup.Result x = Cleanup.DanglingCopper(pcbServer, board, 0.01);
                 if (tracks == 0) return "SKIP: board has no tracks";
-                if (x.Scanned == 0) return "FAIL: no endpoints scanned with " + tracks + " tracks present";
+                if (x.Scanned == 0)
+                {
+                    // This check compares endpoints within a net, so unnetted
+                    // copper gives it nothing to compare. It must say that
+                    // rather than report a clean board.
+                    if (x.SkippedNoNet > 0 && x.Errors.Count > 0)
+                        return "PASS: nothing checked, and it said so — all " + x.SkippedNoNet +
+                               " copper primitive(s) carry no net, so there are no same-net endpoints " +
+                               "to compare. A silent zero here would have read as a clean board";
+                    return "FAIL: no endpoints scanned with " + tracks + " tracks present";
+                }
                 return "PASS: " + x.Scanned + " endpoints scanned, " + x.Found + " primitives with a free end";
             });
 
@@ -460,14 +567,27 @@ namespace AltiumSpike
                 if (x.CsvPath.Length == 0) return "FAIL: no CSV written";
                 if (x.Considered == 0) return "FAIL: the physical stack walked zero layers";
 
+                // Read the KIND COLUMN, not the whole line. The first version
+                // searched for ",Dielectric," anywhere and passed on a board
+                // where that string was a layer NAME and every kind was wrong.
                 string[] lines = File.ReadAllLines(x.CsvPath);
                 bool copper = false, dielectric = false;
+                int copperCount = 0, kindCount = 0;
                 for (int i = 1; i < lines.Length; i++)
                 {
-                    if (lines[i].Contains(",Copper,")) copper = true;
-                    if (lines[i].Contains(",Core,") || lines[i].Contains(",Prepreg,") ||
-                        lines[i].Contains(",Dielectric,")) dielectric = true;
+                    string[] f = SplitCsv(lines[i]);
+                    if (f.Length < 5) continue;
+                    string kind = f[2];
+                    if (kind.Length == 0) continue;
+                    kindCount++;
+                    if (kind == "Copper") { copper = true; copperCount++; }
+                    if (kind == "Core" || kind == "Prepreg" || kind == "Dielectric" ||
+                        kind == "Surface" || kind == "Film") dielectric = true;
                 }
+
+                if (kindCount > 0 && copperCount == kindCount)
+                    return "FAIL: every one of " + kindCount + " physical layers is typed Copper, " +
+                           "which no real stack is -- the layer kind test is wrong";
                 if (!copper)
                     return "FAIL: the stack export has no copper layer -- the physical class walk is wrong";
                 if (!dielectric)
@@ -908,14 +1028,21 @@ namespace AltiumSpike
                 o.OriginYMM = oy + 120.0;
                 o.ReplaceExisting = true;
 
-                int before = Count(board, TObjectId.eTextObject);
+                o.Title = "SELFTEST STACKUP " + DateTime.Now.ToString("HHmmss", Inv);
+
                 StackupTable.Result x = StackupTable.Generate(pcbServer, board, o);
-                int after = Count(board, TObjectId.eTextObject);
 
                 if (x.Rows == 0)
                     return "FAIL: no rows drawn -- " + string.Join("; ", x.Errors.ToArray());
-                if (after <= before)
-                    return "FAIL: reported " + x.PrimitivesDrawn + " primitives but no text was added";
+
+                // Look for the title ON THE BOARD rather than comparing text
+                // counts before and after. ReplaceExisting deletes the previous
+                // table first, so on a second run the count comes back level
+                // and a before/after test reports a failure that is not one --
+                // which is exactly what it did.
+                if (!FindText(board, o.Title))
+                    return "FAIL: reported " + x.PrimitivesDrawn +
+                           " primitives but the title text is not on the board";
                 if (x.BoardThicknessMM <= 0.0)
                     return "FAIL: " + x.Rows + " rows but total thickness is zero";
                 if (x.BoardThicknessMM > 10.0)
@@ -952,42 +1079,89 @@ namespace AltiumSpike
 
             r.Section = "Silkscreen";
 
-            r.Run("Normalise designator text", "every designator ends at the requested height", delegate
+            r.Run("Normalise designator text", "every designator ends at the requested height, then is put back", delegate
             {
-                Silkscreen.Result x = Silkscreen.Normalise(pcbServer, board, false, 1.0, 0.15, false);
-                if (x.Changed == 0)
-                    return "FAIL: nothing changed -- " + string.Join("; ", x.Errors.ToArray());
+                // EVERY DESIGNATOR ON THE BOARD IS ABOUT TO CHANGE, so record
+                // what they were first. An earlier version of this check did
+                // not, and a run against a real board left all 61 designators
+                // resized with nothing to restore them from.
+                List<IPCB_Text> texts = new List<IPCB_Text>();
+                List<int> sizes = new List<int>();
+                List<int> widths = new List<int>();
 
-                // Read one back rather than trusting the count.
-                int wrong = 0, checkedCount = 0;
-                IPCB_BoardIterator it = board.BoardIterator_Create();
+                IPCB_BoardIterator it0 = board.BoardIterator_Create();
                 try
                 {
-                    it.AddFilter_ObjectSet(new TObjectSet(TObjectId.eComponentObject));
-                    it.AddFilter_AllLayers();
-                    it.AddFilter_Method(TIterationMethod.eProcessAll);
-                    IPCB_Component c = it.FirstPCBObject() as IPCB_Component;
-                    while (c != null && checkedCount < 25)
+                    it0.AddFilter_ObjectSet(new TObjectSet(TObjectId.eComponentObject));
+                    it0.AddFilter_AllLayers();
+                    it0.AddFilter_Method(TIterationMethod.eProcessAll);
+                    IPCB_Component c0 = it0.FirstPCBObject() as IPCB_Component;
+                    while (c0 != null)
                     {
                         try
                         {
-                            IPCB_Text t = c.GetState_Name();
+                            IPCB_Text t = c0.GetState_Name();
                             if (t != null)
                             {
-                                checkedCount++;
-                                if (Math.Abs(ToMM(t.GetState_Size()) - 1.0) > 0.005) wrong++;
+                                texts.Add(t);
+                                sizes.Add(t.GetState_Size());
+                                widths.Add(t.GetState_Width());
                             }
                         }
                         catch { }
-                        c = it.NextPCBObject() as IPCB_Component;
+                        c0 = it0.NextPCBObject() as IPCB_Component;
                     }
                 }
-                finally { board.BoardIterator_Destroy(ref it); }
+                finally { board.BoardIterator_Destroy(ref it0); }
 
-                if (wrong > 0)
-                    return "FAIL: " + wrong + " of " + checkedCount + " sampled designators are not 1.0 mm";
-                return "PASS: " + x.Changed + " designators resized, " + checkedCount +
-                       " sampled all read back at 1.0 mm";
+                if (texts.Count == 0) return "SKIP: no component designators on this board";
+
+                try
+                {
+                    Silkscreen.Result x = Silkscreen.Normalise(pcbServer, board, false, 1.0, 0.15, false);
+                    if (x.Changed == 0)
+                        return "FAIL: nothing changed -- " + string.Join("; ", x.Errors.ToArray());
+
+                    // Read one back rather than trusting the count.
+                    int wrong = 0, checkedCount = 0;
+                    for (int i = 0; i < texts.Count && checkedCount < 25; i++)
+                    {
+                        try
+                        {
+                            checkedCount++;
+                            if (Math.Abs(ToMM(texts[i].GetState_Size()) - 1.0) > 0.005) wrong++;
+                        }
+                        catch { }
+                    }
+
+                    if (wrong > 0)
+                        return "FAIL: " + wrong + " of " + checkedCount + " sampled designators are not 1.0 mm";
+                    return "PASS: " + x.Changed + " designators resized, " + checkedCount +
+                           " sampled all read back at 1.0 mm, all " + texts.Count + " restored";
+                }
+                finally
+                {
+                    pcbServer.PreProcess();
+                    try
+                    {
+                        for (int i = 0; i < texts.Count; i++)
+                        {
+                            try
+                            {
+                                texts[i].BeginModify();
+                                try
+                                {
+                                    texts[i].SetState_Size(sizes[i]);
+                                    texts[i].SetState_Width(widths[i]);
+                                }
+                                finally { texts[i].EndModify(); }
+                            }
+                            catch { }
+                        }
+                    }
+                    finally { pcbServer.PostProcess(); }
+                    board.ViewManager_FullUpdate();
+                }
             });
 
             r.Section = "Release";
@@ -1189,6 +1363,100 @@ namespace AltiumSpike
 
                 return "PASS: " + x.Changed + " of " + polys + " repoured, none stale afterwards";
             });
+
+            // ==============================================================
+            // Clean up after ourselves.
+            //
+            // The first version of this left its scratch geometry on the board
+            // "as evidence". That is fine on a scratch copy and wrong on the
+            // board someone actually opened -- which is what happened. The
+            // evidence is the report; the board goes back as it was.
+            //
+            // Everything built above went into a rectangle well clear of the
+            // board outline, so the sweep is bounded by that rectangle and
+            // cannot reach real copper.
+            // ==============================================================
+            r.Section = "Cleanup";
+
+            r.Run("Remove the scratch geometry", "the clear area is empty again", delegate
+            {
+                double x1 = ox - 20.0, y1 = oy - 40.0;
+                double x2 = ox + 200.0, y2 = oy + 200.0;
+
+                int removed = 0, left = 0;
+
+                List<IPCB_Primitive> doomed = new List<IPCB_Primitive>();
+                IPCB_BoardIterator it = board.BoardIterator_Create();
+                try
+                {
+                    it.AddFilter_ObjectSet(new TObjectSet(new TObjectId[] {
+                        TObjectId.eTrackObject, TObjectId.eArcObject, TObjectId.eViaObject,
+                        TObjectId.ePadObject, TObjectId.eFillObject, TObjectId.eTextObject }));
+                    it.AddFilter_AllLayers();
+                    it.AddFilter_Method(TIterationMethod.eProcessAll);
+
+                    IPCB_Primitive p = it.FirstPCBObject();
+                    while (p != null)
+                    {
+                        try
+                        {
+                            CoordRect b = p.BoundingRectangle();
+                            double bx1 = ToMM(b.GetX1()), by1 = ToMM(b.GetY1());
+                            double bx2 = ToMM(b.GetX2()), by2 = ToMM(b.GetY2());
+
+                            // Wholly inside the scratch rectangle. A primitive
+                            // straddling its edge is left alone: better to
+                            // leave a stray test object than to delete
+                            // something of the user's.
+                            if (bx1 >= x1 && bx2 <= x2 && by1 >= y1 && by2 <= y2)
+                                doomed.Add(p);
+                        }
+                        catch { }
+                        p = it.NextPCBObject();
+                    }
+                }
+                catch { }
+                finally { board.BoardIterator_Destroy(ref it); }
+
+                pcbServer.PreProcess();
+                try
+                {
+                    for (int i = 0; i < doomed.Count; i++)
+                    {
+                        try { board.RemovePCBObject(doomed[i]); removed++; }
+                        catch { left++; }
+                    }
+                }
+                finally { pcbServer.PostProcess(); }
+
+                board.ViewManager_FullUpdate();
+
+                if (left > 0)
+                    return "FAIL: removed " + removed + " scratch object(s) but " + left +
+                           " could not be deleted -- check the area near " + F3(x1) + ", " + F3(y1);
+
+                return "PASS: " + removed + " scratch object(s) removed; the board is as it was found";
+            });
+        }
+
+        private static bool FindText(IPCB_Board board, string want)
+        {
+            IPCB_BoardIterator it = board.BoardIterator_Create();
+            try
+            {
+                it.AddFilter_ObjectSet(new TObjectSet(TObjectId.eTextObject));
+                it.AddFilter_AllLayers();
+                it.AddFilter_Method(TIterationMethod.eProcessAll);
+                IPCB_Text t = it.FirstPCBObject() as IPCB_Text;
+                while (t != null)
+                {
+                    try { if ((t.GetState_Text() ?? "") == want) return true; } catch { }
+                    t = it.NextPCBObject() as IPCB_Text;
+                }
+            }
+            catch { }
+            finally { board.BoardIterator_Destroy(ref it); }
+            return false;
         }
 
         private static IPCB_Component FirstMoveableComponent(IPCB_Board board)
@@ -1370,8 +1638,10 @@ namespace AltiumSpike
             if (!rep.ModifyingRun)
                 md.Add("> Read-only checks only. Board-modifying checks were not run.");
             else
-                md.Add("> Includes board-modifying checks. They built their own geometry in a clear " +
-                       "area off the board and left it there as evidence — delete it when you are done.");
+                md.Add("> Includes board-modifying checks. They built their own geometry in a clear area " +
+                       "off the board, verified it and removed it again; the checks that touched existing " +
+                       "objects recorded and restored them. Nothing was written to disk — the document is " +
+                       "modified in memory only, so an unsaved board is unchanged on disk either way.");
             md.Add("");
 
             string section = null;

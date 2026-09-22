@@ -150,6 +150,8 @@ namespace AltiumSpike
             public int TracksScanned;
             public int NetsReported;
             public int Failures;
+            public int SkippedNoNet;        // copper carrying no net at all
+            public int SkippedOffCopper;    // tracks on overlay / mechanical layers
             public string CsvPath = "";
             public string WorstNet = "";
             public double WorstAmps;
@@ -168,6 +170,12 @@ namespace AltiumSpike
                     if (Failures > 0 && opt.SelectFailures) s += " (their narrowest tracks are selected)";
                     s += ".\n";
                 }
+                if (SkippedNoNet > 0)
+                    s += SkippedNoNet + " copper primitive(s) carry NO NET and could not be rated -- " +
+                         "current capacity is reported per net, and copper with no net belongs to none. " +
+                         "Run the unnetted copper report in Cleanup to see what they are.\n";
+                if (SkippedOffCopper > 0)
+                    s += SkippedOffCopper + " track(s) sit on a non-copper layer and were ignored.\n";
                 if (UsedDefaultThickness)
                     s += "Some layers reported no copper thickness; " +
                          opt.DefaultThicknessMM.ToString("0.####", Inv) + " mm was assumed for those.\n";
@@ -208,10 +216,10 @@ namespace AltiumSpike
                         if (opt.OnlySelection && !p.GetState_Selected()) { p = it.NextPCBObject(); continue; }
 
                         IPCB_Net net = p.GetState_Net();
-                        if (net == null) { p = it.NextPCBObject(); continue; }
+                        if (net == null) { res.SkippedNoNet++; p = it.NextPCBObject(); continue; }
 
                         string netName = net.GetState_Name() ?? "";
-                        if (netName.Length == 0) { p = it.NextPCBObject(); continue; }
+                        if (netName.Length == 0) { res.SkippedNoNet++; p = it.NextPCBObject(); continue; }
 
                         string layerName = "";
                         try { layerName = lu.AsString(p.GetState_V7Layer()); } catch { }
@@ -220,7 +228,7 @@ namespace AltiumSpike
                         // or mechanical layer is a drawing, and letting one
                         // into this report would rate a net by the width of a
                         // silkscreen line.
-                        if (!layers.ContainsKey(layerName)) { p = it.NextPCBObject(); continue; }
+                        if (!layers.ContainsKey(layerName)) { res.SkippedOffCopper++; p = it.NextPCBObject(); continue; }
 
                         double width = 0.0;
                         double x = 0.0, y = 0.0;
@@ -433,11 +441,47 @@ namespace AltiumSpike
                         if (poly != null)
                         {
                             kind = "Polygon";
-                            // AreaSize comes back in square internal units;
-                            // one internal unit is CoordToMMs(1) mm, so the
-                            // area converts by that ratio squared.
-                            double mmPerCoord = EDP.Utils.CoordToMMs(1000000) / 1000000.0;
-                            areaMM2 = poly.GetState_AreaSize() * mmPerCoord * mmPerCoord;
+
+                            // MEASURED FROM THE OUTLINE, not read from
+                            // GetState_AreaSize(). That accessor came back as
+                            // exactly 0 on a poured polygon on a real board,
+                            // and a copper report saying 0.00 mm2 for a pour
+                            // that visibly covers half the board is worse than
+                            // no report. The outline is there, so measure it.
+                            List<double> px = new List<double>();
+                            List<double> py = new List<double>();
+                            try
+                            {
+                                int n = poly.GetState_PointCount();
+                                for (int i = 0; i < n; i++)
+                                {
+                                    IPolySegment seg = poly.Internal_GetState_Segments(i);
+                                    if (seg == null) continue;
+                                    px.Add(ToMM(seg.GetVx()));
+                                    py.Add(ToMM(seg.GetVy()));
+                                }
+                            }
+                            catch { }
+
+                            areaMM2 = PolyGeometry.PolygonArea(px, py);
+
+                            if (areaMM2 <= 0)
+                            {
+                                // Fall back to the cached value rather than
+                                // reporting nothing, and say which was used.
+                                double mmPerCoord = EDP.Utils.CoordToMMs(1000000) / 1000000.0;
+                                areaMM2 = poly.GetState_AreaSize() * mmPerCoord * mmPerCoord;
+                                if (areaMM2 > 0) kind = "Polygon (cached area)";
+                                else kind = "Polygon (no measurable outline)";
+                            }
+                            else
+                            {
+                                // The outline is the boundary; copper removed
+                                // inside it for clearances and islands is not
+                                // subtracted. Said plainly in the CSV rather
+                                // than implied.
+                                kind = "Polygon (outline)";
+                            }
                             res.Polygons++;
                         }
                         else
