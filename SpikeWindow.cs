@@ -134,7 +134,7 @@ namespace AltiumSpike
 
         // release packager
         private TextBox relProject, relRev, relOutJob, relOutFolder, relDest;
-        private CheckBox relGenerate, relDryRun;
+        private CheckBox relGenerate;
 
         private SpikeWindow(IClient client)
         {
@@ -142,9 +142,9 @@ namespace AltiumSpike
 
             Title = "AltiumSpike";
             Width = 900;
-            Height = 880;
+            Height = 760;
             MinWidth = 760;
-            MinHeight = 560;
+            MinHeight = 540;
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.CanResize;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -271,32 +271,263 @@ namespace AltiumSpike
             g.Margin = new Thickness(20, 18, 20, 18);
             g.RowDefinitions.Add(Row(GridLength.Auto));                          // board header
             g.RowDefinitions.Add(Row(GridLength.Auto));                          // results
-            g.RowDefinitions.Add(Row(new GridLength(1, GridUnitType.Star)));     // scrolling body
+            g.RowDefinitions.Add(Row(GridLength.Auto));                          // tab strip
+            g.RowDefinitions.Add(Row(new GridLength(1, GridUnitType.Star)));     // active tab
 
             g.Children.Add(At(BuildBoardHeader(), 0));
             g.Children.Add(At(BuildResultsCard(), 1));
+            g.Children.Add(At(BuildTabStrip(), 2));
+            g.Children.Add(At(BuildTabBody(), 3));
+            return g;
+        }
 
-            // The body scrolls. With three tool groups stacked, a window tall
-            // enough to show everything at once would not fit on a laptop
-            // screen beside Altium, which is where this actually gets used.
-            // The board header and the results strip stay pinned above it,
-            // because those are what you look at after pressing a button.
-            StackPanel body = new StackPanel();
+        // ---------------- tabs ----------------
+        //
+        // Hand-built rather than a WPF TabControl. Restyling TabControl and
+        // TabItem to sit beside Altium means replacing their ControlTemplates
+        // wholesale, and a ControlTemplate expressed in C# is a page of
+        // FrameworkElementFactory calls nobody can read afterwards. The window
+        // is already code-only for the reasons at the top of this file, so a
+        // strip of buttons over a swapped panel is both shorter and easier to
+        // change later.
+        //
+        // The board header and the results strip stay ABOVE the tabs on
+        // purpose. Which board is open, and what the last action did, are true
+        // whichever tab you are on -- and putting the result inside a tab
+        // would hide the outcome of a button the moment you switched away from
+        // it.
+
+        private readonly List<Button> tabButtons = new List<Button>();
+        private readonly List<UIElement> tabPanels = new List<UIElement>();
+        private readonly List<Border> tabUnderlines = new List<Border>();
+        private int activeTab = -1;
+
+        private static readonly ControlTemplate TabTemplate =
+            FlatButtonTemplate(Hex("#333333"), Hex("#3A3A3A"));
+
+        private static readonly string[] TabNames =
+        {
+            "Import / Export",
+            "High-speed",
+            "Fabrication",
+            "Release",
+        };
+
+        // A minimal Button template: a Border wrapping the content, with our
+        // own hover and press colours.
+        //
+        // Needed because WPF's stock Button template hardcodes a pale blue
+        // MouseOver fill in its own trigger, which a plain Background setter
+        // cannot override -- on a dark strip that reads as a rendering fault.
+        // The other buttons in this window tolerate it because they are rarely
+        // hovered in passing; a tab strip is hovered constantly.
+        //
+        // Built with FrameworkElementFactory rather than XamlReader.Parse so
+        // nothing has to parse markup at runtime inside Altium's process.
+        private static ControlTemplate FlatButtonTemplate(Brush hover, Brush pressed)
+        {
+            FrameworkElementFactory border = new FrameworkElementFactory(typeof(Border), "bd");
+            border.SetValue(Border.BackgroundProperty,
+                            new TemplateBindingExtension(Control.BackgroundProperty));
+            border.SetValue(Border.PaddingProperty,
+                            new TemplateBindingExtension(Control.PaddingProperty));
+
+            FrameworkElementFactory content = new FrameworkElementFactory(typeof(ContentPresenter));
+            content.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            content.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+            border.AppendChild(content);
+
+            ControlTemplate t = new ControlTemplate(typeof(Button));
+            t.VisualTree = border;
+
+            Trigger over = new Trigger();
+            over.Property = UIElement.IsMouseOverProperty;
+            over.Value = true;
+            over.Setters.Add(new Setter(Border.BackgroundProperty, hover, "bd"));
+            t.Triggers.Add(over);
+
+            Trigger press = new Trigger();
+            press.Property = System.Windows.Controls.Primitives.ButtonBase.IsPressedProperty;
+            press.Value = true;
+            press.Setters.Add(new Setter(Border.BackgroundProperty, pressed, "bd"));
+            t.Triggers.Add(press);
+
+            t.Seal();
+            return t;
+        }
+
+        private UIElement BuildTabStrip()
+        {
+            Border wrap = new Border();
+            wrap.BorderBrush = Divider;
+            wrap.BorderThickness = new Thickness(0, 0, 0, 1);
+            wrap.Margin = new Thickness(0, 0, 0, 14);
+
+            StackPanel strip = new StackPanel();
+            strip.Orientation = Orientation.Horizontal;
+
+            for (int i = 0; i < TabNames.Length; i++)
+            {
+                int index = i;      // captured per iteration, not shared
+
+                Grid cell = new Grid();
+                cell.RowDefinitions.Add(Row(GridLength.Auto));
+                cell.RowDefinitions.Add(Row(GridLength.Auto));
+
+                Button b = new Button();
+                b.Content = TabNames[i];
+                b.FontSize = 12.5;
+                b.FontFamily = UiFont;
+                b.FontWeight = FontWeights.SemiBold;
+                b.Foreground = TextDim;
+                b.Background = Brushes.Transparent;
+                b.BorderThickness = new Thickness(0);
+                b.Padding = new Thickness(15, 9, 15, 9);
+                b.Cursor = Cursors.Hand;
+                b.Template = TabTemplate;
+                b.Click += delegate { SelectTab(index); };
+                AutomationName(b, TabNames[i] + " tab");
+                Grid.SetRow(b, 0);
+                cell.Children.Add(b);
+
+                // The selected tab is marked with a 2px accent bar rather than
+                // a filled background, so the strip stays quiet against the
+                // cards below it.
+                Border underline = new Border();
+                underline.Height = 2;
+                underline.Background = Accent;
+                underline.Visibility = Visibility.Hidden;
+                Grid.SetRow(underline, 1);
+                cell.Children.Add(underline);
+
+                tabButtons.Add(b);
+                tabUnderlines.Add(underline);
+                strip.Children.Add(cell);
+            }
+
+            wrap.Child = strip;
+            return wrap;
+        }
+
+        private UIElement BuildTabBody()
+        {
+            // Every panel is built once and kept alive. Rebuilding on each
+            // switch would clear whatever the user had just typed, and all of
+            // these fields are remembered settings that should survive a
+            // glance at another tab.
+            Grid host = new Grid();
+
+            List<UIElement> built = new List<UIElement>();
+            built.Add(BuildImportExportTab());
+            built.Add(BuildHighSpeedTab());
+            built.Add(BuildFabricationTab());
+            built.Add(BuildReleaseTab());
+
+            for (int i = 0; i < built.Count; i++)
+            {
+                ScrollViewer sv = new ScrollViewer();
+                sv.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+                sv.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+                sv.Padding = new Thickness(0, 0, 6, 0);
+                sv.Content = built[i];
+                sv.Visibility = Visibility.Collapsed;
+
+                tabPanels.Add(sv);      // the scroller is what gets shown
+                host.Children.Add(sv);
+            }
+
+            int remembered;
+            if (!int.TryParse(Settings.GetValue("ActiveTab", "0"), out remembered)) remembered = 0;
+            if (remembered < 0 || remembered >= tabPanels.Count) remembered = 0;
+            SelectTab(remembered);
+
+            return host;
+        }
+
+        private void SelectTab(int index)
+        {
+            if (index < 0 || index >= tabPanels.Count) return;
+            if (index == activeTab) return;
+
+            for (int i = 0; i < tabPanels.Count; i++)
+            {
+                bool on = (i == index);
+                tabPanels[i].Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+                tabButtons[i].Foreground = on ? TextPrimary : TextDim;
+                tabUnderlines[i].Visibility = on ? Visibility.Visible : Visibility.Hidden;
+            }
+
+            activeTab = index;
+            Settings.SetValue("ActiveTab", index.ToString(CultureInfo.InvariantCulture));
+        }
+
+        // ---------------- tab 1: import / export ----------------
+        private UIElement BuildImportExportTab()
+        {
+            StackPanel sp = new StackPanel();
 
             FrameworkElement cols = BuildColumns() as FrameworkElement;
             if (cols != null) cols.MinHeight = 340;   // keeps the two columns readable
-            body.Children.Add(cols);
-            body.Children.Add(BuildHighSpeedSection());
-            body.Children.Add(BuildFabricationSection());
+            sp.Children.Add(cols);
 
-            ScrollViewer sv = new ScrollViewer();
-            sv.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-            sv.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
-            sv.Padding = new Thickness(0, 0, 6, 0);
-            sv.Content = body;
+            // Net lengths sits here rather than with the via fence: it writes
+            // CSVs and changes nothing on the board, which is what everything
+            // else on this tab does. The fence mutates the board and belongs
+            // with the tools that do.
+            Grid row = new Grid();
+            row.Margin = new Thickness(0, 15, 0, 0);
+            row.ColumnDefinitions.Add(ColFixed(250));
+            row.ColumnDefinitions.Add(Col());
 
-            g.Children.Add(At(sv, 2));
-            return g;
+            UIElement lengths = BuildNetLengthsCard();
+            Grid.SetColumn(lengths, 0);
+            row.Children.Add(lengths);
+
+            sp.Children.Add(row);
+            return sp;
+        }
+
+        // ---------------- tab 2: high-speed ----------------
+        private UIElement BuildHighSpeedTab()
+        {
+            StackPanel sp = new StackPanel();
+            sp.Children.Add(BuildViaFenceCard());
+            return sp;
+        }
+
+        // ---------------- tab 3: fabrication ----------------
+        private UIElement BuildFabricationTab()
+        {
+            StackPanel sp = new StackPanel();
+
+            Grid top = new Grid();
+            top.ColumnDefinitions.Add(Col());
+            top.ColumnDefinitions.Add(ColFixed(16));
+            top.ColumnDefinitions.Add(Col());
+
+            UIElement stackCard = BuildStackupCard();
+            Grid.SetColumn(stackCard, 0);
+            top.Children.Add(stackCard);
+
+            UIElement notesCard = BuildNotesCard();
+            Grid.SetColumn(notesCard, 2);
+            top.Children.Add(notesCard);
+
+            sp.Children.Add(top);
+            return sp;
+        }
+
+        // ---------------- tab 4: release ----------------
+        private UIElement BuildReleaseTab()
+        {
+            StackPanel sp = new StackPanel();
+
+            UIElement card = BuildReleaseCard();
+            FrameworkElement fe = card as FrameworkElement;
+            if (fe != null) fe.Margin = new Thickness(0);   // no longer stacked under anything
+            sp.Children.Add(card);
+
+            return sp;
         }
 
         private UIElement BuildBoardHeader()
@@ -412,39 +643,11 @@ namespace AltiumSpike
             return c;
         }
 
-        // ---------------- export ----------------
-        // ---------------- high-speed tools ----------------
+        // ---------------- cards ----------------
         //
-        // These two live in their own full-width strip rather than inside the
-        // Export column, because neither is a plain "write a CSV of the
-        // board" action: the fence MUTATES the board and depends on what is
-        // selected in the editor, and the length export is the only output
-        // whose numbers come from Altium's own calculators rather than from
-        // geometry this plugin measures. Grouping them keeps that distinction
-        // visible instead of burying a board-modifying button between two
-        // read-only exports.
-        private UIElement BuildHighSpeedSection()
-        {
-            StackPanel outer = new StackPanel();
-            outer.Margin = new Thickness(0, 15, 0, 0);
-            outer.Children.Add(SectionHeader("HIGH-SPEED"));
-
-            Grid g = new Grid();
-            g.ColumnDefinitions.Add(Col());
-            g.ColumnDefinitions.Add(ColFixed(16));
-            g.ColumnDefinitions.Add(ColFixed(250));
-
-            UIElement fence = BuildViaFenceCard();
-            Grid.SetColumn(fence, 0);
-            g.Children.Add(fence);
-
-            UIElement lengths = BuildNetLengthsCard();
-            Grid.SetColumn(lengths, 2);
-            g.Children.Add(lengths);
-
-            outer.Children.Add(g);
-            return outer;
-        }
+        // Each card is a self-contained module. Which tab a card appears on is
+        // decided by the BuildXxxTab methods above, so moving one between tabs
+        // is a one-line change here.
 
         private UIElement BuildViaFenceCard()
         {
@@ -571,36 +774,11 @@ namespace AltiumSpike
             return cb;
         }
 
-        // ---------------- fabrication documentation & release ----------------
-        //
-        // Three tools that all end in an artefact a fabricator reads: a
-        // stackup table and a note block drawn onto the board, and the
-        // release archive itself. They share a section because they share a
-        // moment -- the one just before a board goes out.
-        private UIElement BuildFabricationSection()
-        {
-            StackPanel outer = new StackPanel();
-            outer.Margin = new Thickness(0, 15, 0, 0);
-            outer.Children.Add(SectionHeader("FABRICATION"));
-
-            Grid top = new Grid();
-            top.ColumnDefinitions.Add(Col());
-            top.ColumnDefinitions.Add(ColFixed(16));
-            top.ColumnDefinitions.Add(Col());
-
-            UIElement stackCard = BuildStackupCard();
-            Grid.SetColumn(stackCard, 0);
-            top.Children.Add(stackCard);
-
-            UIElement notesCard = BuildNotesCard();
-            Grid.SetColumn(notesCard, 2);
-            top.Children.Add(notesCard);
-
-            outer.Children.Add(top);
-            outer.Children.Add(BuildReleaseCard());
-            return outer;
-        }
-
+        // Both of these end in an artefact a fabricator reads, drawn onto the
+        // board itself, which is why they share the Fabrication tab. The
+        // release archive gets its own tab instead: it is the only thing in
+        // the window that writes outside Altium, and it deserves the room for
+        // its four paths.
         private UIElement BuildStackupCard()
         {
             Border card = CardBorderEl(new Thickness(15, 13, 15, 13));

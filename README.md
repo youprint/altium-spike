@@ -7,7 +7,24 @@ one window.
 It exports board data for external tooling, places components, tracks, vias,
 pours and regions back from CSV, locks and unlocks components, generates
 JLCPCB-ready BOM and pick-and-place files, exports per-net and per-pin-pair
-length and delay, and builds via fences along selected RF traces.
+length and delay, builds via fences along selected RF traces, draws the layer
+stackup and fabrication notes onto the board, and packages a dated release
+archive.
+
+The window is organised into four tabs:
+
+| Tab | Holds |
+| --- | --- |
+| **Import / Export** | Board data, JLCPCB assembly, CSV import, component lock, net lengths |
+| **High-speed** | Via fence |
+| **Fabrication** | Layer stackup table, assembly notes |
+| **Release** | Release candidate package |
+
+Net lengths sits with Import / Export rather than with the via fence because
+it writes CSVs and changes nothing on the board — the fence mutates the board,
+which is the line the tabs are drawn along. The board header and the result
+strip stay above the tabs: which board is open, and what the last action did,
+are true whichever tab you are on.
 
 ![The AltiumSpike window](docs/window.png)
 
