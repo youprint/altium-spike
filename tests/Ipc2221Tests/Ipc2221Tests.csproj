@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Ipc2221Tests</AssemblyName>
+    <RootNamespace>IpcTest</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <!--
+    Compiles the plugin's own Ipc2221.cs rather than a copy, so these
+    assertions cannot drift from what ships. That file references no Altium
+    type, which is what makes this possible: the tests run anywhere dotnet
+    does, with no Altium installation and no SDK assemblies.
+  -->
+  <ItemGroup>
+    <Compile Include="../../Ipc2221.cs" />
+    <Compile Include="Tests.cs" />
+  </ItemGroup>
+
+</Project>

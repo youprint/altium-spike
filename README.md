@@ -1,8 +1,8 @@
 # AltiumSpike
 
-A C# extension for **Altium Designer 26** that adds CSV import/export, JLCPCB
-assembly output, high-speed routing tools and fabrication documentation, in
-one window.
+A C# extension for **Altium Designer 26**: CSV import/export, JLCPCB assembly
+output, high-speed and EMC checks, board cleanup, silkscreen and geometry
+editing, fabrication documentation and release packaging — in one window.
 
 It exports board data for external tooling, places components, tracks, vias,
 pours and regions back from CSV, locks and unlocks components, generates
@@ -11,26 +11,25 @@ length and delay, builds via fences along selected RF traces, draws the layer
 stackup and fabrication notes onto the board, and packages a dated release
 archive.
 
-The window is organised into four tabs:
+The window is organised into fourteen sections down a left sidebar:
 
-| Tab | Holds |
+| Group | Sections |
 | --- | --- |
-| **Import / Export** | Board data, JLCPCB assembly, CSV import, component lock, net lengths |
-| **High-speed** | Via fence |
-| **Fabrication** | Layer stackup table, assembly notes |
-| **Release** | Release candidate package |
+| **Data** | Import / Export · Reports |
+| **High-speed** | Via fence · Via tools · Copper & current |
+| **Design** | Design rules · Testpoints · Cleanup |
+| **Edit** | Silkscreen · Geometry · Layers |
+| **Output** | Fabrication · Variants · Release |
 
-Net lengths sits with Import / Export rather than with the via fence because
-it writes CSVs and changes nothing on the board — the fence mutates the board,
-which is the line the tabs are drawn along. The board header and the result
-strip stay above the tabs: which board is open, and what the last action did,
-are true whichever tab you are on.
+A sidebar rather than tabs: fourteen tab labels come to roughly 1900px of tab
+row in a 900px window, a second row moves as the window resizes so you can
+never learn where anything is, and a scrolling row hides whatever is
+off-screen. A vertical list scales, keeps every name readable, and lets
+sections carry group headers.
 
-![The AltiumSpike window](docs/window.png)
-
-> The images in this README are renderings of the UI design, not photographs of
-> a running session. The shipped window is built from these designs and matches
-> them closely, but treat them as illustrations rather than screenshots.
+The board header and the result strip stay across the top, above both the
+sidebar and the content: which board is open, and what the last action did,
+are true whichever section you are in.
 
 ---
 
@@ -78,9 +77,6 @@ dangling edit transaction that blocks **File → Save** afterwards.
 ![After a JLCPCB export](docs/window-result.png)
 
 ### High-speed
-
-Two tools aimed at RF and fast digital work, in their own strip at the bottom
-of the window because neither is an ordinary "dump the board to CSV" action.
 
 #### Net lengths
 
@@ -137,6 +133,149 @@ Two details that are easy to get wrong and are covered by tests:
 - **Junction de-duplication is per wall.** With a tight offset the mirrored
   pair can sit closer to each other than half the pitch, so a single shared
   list would silently delete one wall of the fence.
+
+#### Via tools
+
+**Return via check** finds signal vias with no return via nearby. When a
+high-speed signal changes layer its return current has to change reference
+plane with it, and it can only do that through a stitching via close by.
+Without one the return takes a long detour, and that loop area is radiated
+emission and crosstalk. It is invisible in DRC, invisible on screen, and one
+of the most common EMC findings on an otherwise clean board.
+
+The check is deliberately simple — nearest via on the reference net, flagged
+past a threshold. It does *not* work out which planes the signal actually
+transitions between, because that needs the full stackup and plane assignment
+of both layers and getting it subtly wrong would produce confident wrong
+answers. What it gives you is the list worth looking at. Offenders are selected
+on the board, not just listed, so you can step through them.
+
+**Tenting** and **barrel relief** set solder mask expansion in bulk. Tenting is
+not a flag in the SDK — it is a mask opening small enough to vanish, so tenting
+sets a negative expansion past the pad radius. Barrel relief opens the mask a
+fixed distance from the **hole** edge rather than the pad edge, so the annular
+opening is consistent whatever the pad size; a large plated hole under mask is
+a mask-cracking risk because the mask bridges the barrel with nothing under it.
+
+#### Copper & current
+
+**Current capacity** rates every net by IPC-2221:
+
+    I = k · ΔT^0.44 · A^0.725     k = 0.048 external, 0.024 internal
+
+Two things this gets right that a naive implementation does not. It rates each
+net by its **narrowest** track — a power net 2 mm wide for 40 mm and 0.2 mm
+through one BGA escape is a 0.2 mm net as far as heating goes, and that escape
+is the bit nobody looks at. And it uses each track's **own layer**: a buried
+conductor sheds heat only by conduction through laminate and carries roughly
+half what the same track carries outside, so applying the external constant
+everywhere overstates an inner-layer track by 2×. Copper weight and inner/outer
+status both come from the real stackup.
+
+Output is `net_current_capacity.csv` with the limiting width, its layer and
+coordinates, the capacity, and — given a target current — the width that would
+be needed and a pass/fail. Failing nets are selected at their narrowest point.
+
+**Copper areas** reports polygon and region area per layer and per net.
+Polygon area is the real filled area after thermal reliefs and island removal;
+regions expose no area member in the SDK and are reported by bounding box,
+labelled as such in the CSV.
+
+### Design
+
+#### Design rules
+
+**Export** puts every rule in a CSV — kind, priority, scope, enabled state, and
+for the kinds whose constraint member is confirmed in the SDK, its value. Other
+kinds export with a blank value rather than a guess; a wrong clearance number
+in a rules report is worse than a blank one, because a blank invites you to go
+and look.
+
+**Audit** finds rules that exist but are not doing their job: disabled ones,
+ones with an empty scope that match nothing, and two rules of a kind sharing a
+priority so which wins depends on ordering rather than intent. None of these is
+something Altium reports — DRC simply passes.
+
+#### Testpoints
+
+Coverage per net, assignment, and a pad-centre check. Testpoint state is **four
+flags, not one**: `IsTestPoint_Top`/`_Bottom` for the fabrication testpoint and
+`IsAssyTestPoint_Top`/`_Bottom` for assembly. They are independent, and a report
+that conflates them says a net is covered when the test house cannot reach it,
+so all four are reported separately.
+
+Assignment marks vias and optionally through-hole pads. Surface-mount pads are
+never marked — a bed of nails probing an SMD pad damages the joint it exists to
+verify.
+
+#### Cleanup
+
+**Invalid objects** — polygons with fewer than three vertices, which cannot
+enclose anything but survive save and reload and surface later as Gerber
+artefacts. Find-only selects them; deleting is a separate button.
+
+**Via antennas** — vias with copper on only one layer. **Dangling copper** —
+track ends coinciding with nothing on their net.
+
+Both infer connectivity geometrically, because the SDK exposes no connectivity
+query that can be trusted across pours and planes. Two consequences stated
+plainly: copper poured over a via connects it in a way a coincident-end test
+cannot see, so vias inside pours are excluded by default or every stitching via
+reads as an antenna; and a track ending part-way along another track is a real
+connection in Altium that will not register here.
+
+Nothing here deletes without being told to.
+
+### Edit
+
+#### Silkscreen
+
+Centre designators, hand them back to autoposition, show/hide in bulk, and
+normalise height and stroke.
+
+Centring uses the middle of `BoundingRectangleNoNameComment` — the component
+body with the designator and comment excluded — **not** the component's X/Y.
+That is the anchor, wherever pin 1 or the library origin happens to sit, and on
+plenty of footprints it is nowhere near the middle. Designators are switched to
+manual positioning first, or autoposition pulls them straight back.
+
+#### Geometry
+
+**Fillet** rounds the corner between every pair of selected tracks sharing an
+endpoint. Each corner is either filleted completely or left exactly as it was —
+a track shortened without its arc is a broken connection.
+
+**Distribute** spaces three or more objects evenly, sorted by position first so
+nothing shuffles past anything else. **Scale** scales geometry about the centre
+of the selection and deliberately leaves track widths, hole sizes and pad sizes
+alone; scaling those turns a manufacturable board into one that misses its
+design rules everywhere at once.
+
+#### Layers
+
+**Move to layer** moves selected copper and places a via wherever that would
+break a connection. The move is one line; keeping the board connected is the
+actual job, and without the vias the net breaks *silently* — the track still
+looks connected. Internal planes are refused: a plane is negative artwork, so a
+track dropped on one is a void, not a conductor.
+
+Also exports the stack as CSV and toggles signal-layer visibility.
+
+### Variants
+
+Every variant with the components it populates, and how many are actually
+ordered.
+
+The way in is `IPCB_BoardEx`, not `IPCB_Board` — there is no variant accessor
+on the plain board interface, which is the dead end that makes people conclude
+variants are unreachable from the PCB side:
+
+    IPCB_BoardEx.GetState_FullComponents().GetComponentsForAllVariants()
+        → IPCB_FullComponent.GetDesignVariant() / .GetKind()
+
+`TComponentKind` separates `Standard` from `Standard_NoBOM`, `Mechanical`,
+`Graphical` and the net-tie kinds. A part marked NoBOM or Graphical is on the
+board and must not be ordered; counting it is how a build ends up over on parts.
 
 ### Fabrication
 
@@ -270,12 +409,20 @@ Altium type, so the tests need no Altium installation and no SDK assemblies:
 ```powershell
 dotnet run --project tests/FenceGeometryTests
 dotnet run --project tests/ReleaseBundleTests
+dotnet run --project tests/Ipc2221Tests
+dotnet run --project tests/FilletGeometryTests
 ```
 
-Both compile the shipped source file directly — `FenceGeometry.cs` and
-`ReleaseBundle.cs` — rather than a copy, so the assertions cannot drift from
-what runs. Neither file references an Altium or WPF type, which is what makes
-this possible: the tests need no Altium installation and no SDK assemblies.
+Each compiles the shipped source file directly — `FenceGeometry.cs`,
+`ReleaseBundle.cs`, `Ipc2221.cs`, `FilletGeometry.cs` — rather than a copy, so
+the assertions cannot drift from what runs. None of those files references an
+Altium or WPF type, which is what makes this possible: the tests need no Altium
+installation and no SDK assemblies.
+
+That split is deliberate throughout. Wherever there is maths or file handling
+that can be wrong in a way you cannot see on screen, it lives in an
+Altium-free file with a test harness, and the Altium-facing file does only the
+board work.
 
 - **FenceGeometryTests** — 35 assertions: wall spacing on straight, diagonal
   and curved runs, junction de-duplication, the inner-wall fold case, the via
@@ -284,6 +431,14 @@ this possible: the tests need no Altium installation and no SDK assemblies.
   sanitising, extension filtering, refusing to overwrite an existing release,
   nested-release exclusion, same-leaf-name collisions, dry run, and that every
   refusal is explained rather than silent.
+- **Ipc2221Tests** — 25 assertions: the constants, a worked example against the
+  published formula, the exact 2× internal/external split, the inverse round
+  trip, scaling exponents, and that degenerate input returns zero rather than
+  letting a NaN into a CSV a fab house reads.
+- **FilletGeometryTests** — 32 assertions: tangent points exactly the radius
+  from the centre across a sweep of angles and radii, the arc taken is always
+  the minor one, degenerate corners refused with a reason, an oversized radius
+  refused with a usable limit, and tangents never falling beyond their segment.
 
 Exit code is 0 when they all pass.
 
@@ -434,12 +589,17 @@ Verified against a real 2-layer board in Altium 26.8.1:
   passes format conformance.
 - All seven `objects.csv` types, pours, regions and lock/unlock placed
   correctly and were read back to confirm.
-- Via fence geometry: 35 automated assertions, all passing.
-- Release bundling: 30 automated assertions, all passing.
+- 122 automated assertions across four suites, all passing: via fence geometry
+  (35), release bundling (30), IPC-2221 current capacity (25), fillet geometry
+  (32).
 
 Not yet exercised on a live board — built and deployed, verification pending:
-the stackup table, the assembly notes, and the Output Job launch inside the
-release packager.
+the stackup table, the assembly notes, the Output Job launch inside the release
+packager, and everything in the ten sections added most recently (via tools,
+copper & current, design rules, testpoints, cleanup, silkscreen, geometry,
+layers, variants, reports). Every one of those compiles against the real SDK
+and every Altium call in them was read out of assembly metadata rather than
+guessed, but that is not the same as having been run.
 
 Known rough edges:
 
