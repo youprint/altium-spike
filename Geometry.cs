@@ -369,6 +369,62 @@ namespace AltiumSpike
             return res;
         }
 
+        // ==================================================================
+        // Flip components to the other side
+        //
+        // FlipComponent() does the whole job -- layer, mirroring of the
+        // footprint, and the designator with it. Doing it by hand (set layer,
+        // mirror text, mirror pad offsets) gets the pads right and the
+        // silkscreen backwards, which is how a board comes back with every
+        // reference designator mirrored.
+        // ==================================================================
+        public static Result FlipComponents(IPCB_ServerInterface pcbServer, IPCB_Board board)
+        {
+            Result res = new Result();
+
+            List<IPCB_Primitive> sel = Selection(board, new TObjectId[] { TObjectId.eComponentObject },
+                                                 res.Errors);
+            if (sel.Count == 0)
+            { res.Errors.Add("Select the components to flip first."); return res; }
+
+            res.Considered = sel.Count;
+
+            pcbServer.PreProcess();
+            try
+            {
+                for (int i = 0; i < sel.Count; i++)
+                {
+                    IPCB_Component c = sel[i] as IPCB_Component;
+                    if (c == null) { res.Skipped++; continue; }
+
+                    bool opened = false;
+                    try
+                    {
+                        c.BeginModify();
+                        opened = true;
+                        c.FlipComponent();
+                        res.Applied++;
+                    }
+                    catch (Exception ex)
+                    {
+                        res.Errors.Add("Component " + i + ": " + ex.GetType().Name + " -- " + ex.Message);
+                        res.Skipped++;
+                    }
+                    finally
+                    {
+                        // A component left mid-modify blocks File > Save with
+                        // no useful message.
+                        if (opened) { try { c.EndModify(); } catch { } }
+                    }
+                }
+            }
+            finally { pcbServer.PostProcess(); }
+
+            board.ViewManager_FullUpdate();
+            Log.Write("Geometry.FlipComponents: " + res.Applied + " flipped");
+            return res;
+        }
+
         // Moves whatever kinds expose a position. Returns false for anything
         // that does not, so the caller can count it as skipped rather than
         // pretending it moved.

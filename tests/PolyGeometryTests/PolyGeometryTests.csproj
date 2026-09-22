@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>PolyGeometryTests</AssemblyName>
+    <RootNamespace>PolyTest</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <!--
+    Compiles the PLUGIN'S OWN PolyGeometry.cs rather than a copy, so these
+    assertions cannot drift from what ships. PolyGeometry.cs deliberately
+    references no Altium type, which is what makes this possible: the tests
+    run anywhere dotnet does, with no Altium installation and no SDK DLLs.
+
+    Run it from the repository root with dotnet run, pointing at this
+    directory. Exit code is 0 when every assertion passes, 1 otherwise.
+  -->
+  <ItemGroup>
+    <Compile Include="../../PolyGeometry.cs" />
+    <Compile Include="Tests.cs" />
+  </ItemGroup>
+
+</Project>

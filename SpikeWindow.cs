@@ -152,8 +152,19 @@ namespace AltiumSpike
         private CheckBox ccOnlySel;
 
         // cleanup
-        private TextBox clTol, dcTol;
-        private CheckBox clPours;
+        private TextBox clTol, dcTol, dupTol, lrNet;
+        private CheckBox clPours, lrVias, lrSel;
+
+        // dfm
+        private TextBox pgMin, pgCoverage, pgDiv;
+        private CheckBox pgSel, sopSelect;
+
+        // placement
+        private TextBox obMargin, colClear, rotAngle, snapGrid, rnRow;
+        private CheckBox obSelect, colSelect, snapSel, snapLocked, rnSel, rnTopDown;
+
+        // polygons
+        private CheckBox rpStale, rpSel;
 
         // testpoints
         private TextBox tpClass, pcTol;
@@ -377,8 +388,10 @@ namespace AltiumSpike
                 new Section(null,         "Cleanup",          BuildCleanupSection),
 
                 new Section("EDIT",       "Silkscreen",       BuildSilkscreenSection),
+                new Section(null,         "Placement",        BuildPlacementSection),
                 new Section(null,         "Geometry",         BuildGeometrySection),
                 new Section(null,         "Layers",           BuildLayersSection),
+                new Section(null,         "Polygons",         BuildPolygonsSection),
 
                 new Section("OUTPUT",     "Fabrication",      BuildFabricationSection),
                 new Section(null,         "Variants",         BuildVariantsSection),
@@ -631,7 +644,27 @@ namespace AltiumSpike
 
         private UIElement BuildFabricationSection()
         {
-            return Stack(Pair(BuildStackupCard(), BuildNotesCard()));
+            return Stack(Pair(BuildStackupCard(), BuildNotesCard()), BuildPasteGridCard());
+        }
+
+        private UIElement BuildPasteGridCard()
+        {
+            UIElement f0 = LabeledField("Min pad mm", Settings.GetValue("PgMin", "3.000"),
+                                        "Only pads at least this large in both axes", out pgMin);
+            UIElement f1 = LabeledField("Coverage %", Settings.GetValue("PgCoverage", "60"),
+                                        "Paste area as a share of the pad area", out pgCoverage);
+            UIElement f2 = LabeledField("Divisions", Settings.GetValue("PgDiv", "3"),
+                                        "Grid is N x N apertures", out pgDiv);
+
+            pgSel = SideCheck("Selection only", Settings.GetValue("PgSel", "0") != "0");
+
+            return ToolCard("Paste grid", "MODIFIES BOARD", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                "Breaks the paste aperture of large pads — thermal tabs, shield grounds, QFN centre pads — " +
+                "into a window-pane grid. One solid aperture that size puts down more paste than the joint " +
+                "can absorb and the part floats off its pads. The pad's own paste expansion is set hard " +
+                "negative and flagged manual first, or the rule puts the solid aperture straight back.",
+                FieldRow(f0, f1, f2),
+                ActionRow(Go("Build paste grid", DoPasteGrid), 168, pgSel));
         }
 
         private UIElement BuildReleaseSection()
@@ -1336,7 +1369,158 @@ namespace AltiumSpike
                     "the height fills the letterforms in once it is screened onto a board, and you will be " +
                     "warned if the values cross that.",
                     FieldRow(f0, f1),
-                    ActionRow(Go("Normalise text", DoNormaliseText), 168)));
+                    ActionRow(Go("Normalise text", DoNormaliseText), 168)),
+
+                BuildSilkOverPadsCard());
+        }
+
+        private UIElement BuildSilkOverPadsCard()
+        {
+            sopSelect = SideCheck("Select offenders", Settings.GetValue("SopSelect", "1") != "0");
+
+            return ToolCard("Silkscreen over pads", "FINDS FAB ERRORS", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                "Overlay primitives sitting on exposed copper. The fab house clips silkscreen back off the " +
+                "mask openings, so the ink you drew across a pad is simply not printed — a designator loses " +
+                "half its characters and nobody sees it until the boards arrive. Through-hole pads are " +
+                "checked against both overlays, because they are exposed on both sides.",
+                null, ActionRow(Go("Check silkscreen", DoSilkOverPads), 168, sopSelect));
+        }
+
+        // ---------------- placement ----------------
+
+        private UIElement BuildPlacementSection()
+        {
+            return Stack(BuildOffBoardCard(), BuildCollisionCard(), BuildRotationCard(),
+                         BuildSnapCard(), BuildRenumberCard());
+        }
+
+        private UIElement BuildOffBoardCard()
+        {
+            UIElement f0 = LabeledField("Margin mm", Settings.GetValue("ObMargin", "0.050"),
+                                        "A corner this close to the edge still counts as on the board",
+                                        out obMargin);
+
+            obSelect = SideCheck("Select offenders", Settings.GetValue("ObSelect", "1") != "0");
+
+            return ToolCard("Off-board components", "FINDS FAB ERRORS", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                "Component bodies crossing or clearing the board outline. Altium's board-outline clearance " +
+                "rule watches copper, not bodies, so a connector hanging over the edge passes DRC and is " +
+                "found by the assembler. Designators are ignored — ink past the edge is cosmetic, a body " +
+                "past the edge is not.",
+                FieldRow(f0),
+                ActionRow(Go("Check board edge", DoOffBoard), 168, obSelect));
+        }
+
+        private UIElement BuildCollisionCard()
+        {
+            UIElement f0 = LabeledField("Clearance mm", Settings.GetValue("ColClear", "0.000"),
+                                        "Report pairs closer than this, not only overlapping ones",
+                                        out colClear);
+
+            colSelect = SideCheck("Select offenders", Settings.GetValue("ColSelect", "1") != "0");
+
+            return ToolCard("Component collisions", null, null, null, null,
+                "Component bodies sitting on top of each other on the same side — two parts pasted in the " +
+                "same place, a part dropped onto a neighbour, a footprint whose body is far bigger than " +
+                "anyone expected. Bodies are compared as axis-aligned rectangles, so a rotated part reads " +
+                "larger than it is: every hit is worth a look, not every hit is a fault.",
+                FieldRow(f0),
+                ActionRow(Go("Check collisions", DoCollisions), 168, colSelect));
+        }
+
+        private UIElement BuildRotationCard()
+        {
+            UIElement f0 = LabeledField("Rotation °", Settings.GetValue("RotAngle", "0"),
+                                        "Absolute angle, counter-clockwise", out rotAngle);
+
+            return ToolCard("Align rotation", "MODIFIES BOARD", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                "Sets every selected component to one rotation. The angle is absolute, not added, so " +
+                "running it twice does the same as running it once — which is what you want when a row of " +
+                "parts came in at four different angles.",
+                FieldRow(f0),
+                ActionRow(Go("Align selected", DoAlignRotation), 168));
+        }
+
+        private UIElement BuildSnapCard()
+        {
+            UIElement f0 = LabeledField("Grid mm", Settings.GetValue("SnapGrid", "0.100"),
+                                        "Placement grid the origins are pulled onto", out snapGrid);
+
+            snapSel = SideCheck("Selection only", Settings.GetValue("SnapSel", "1") != "0");
+            snapLocked = SideCheck("Skip locked", Settings.GetValue("SnapLocked", "1") != "0");
+
+            return ToolCard("Snap to grid", "MODIFIES BOARD", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                "Pulls component origins onto a placement grid. Parts that arrived from a library import, " +
+                "a paste at an odd snap setting or a drag with the grid off end up on coordinates no " +
+                "assembly file should carry. This moves the origin, which on many footprints is not the " +
+                "middle of the body.",
+                FieldRow(f0),
+                ActionRow(Go("Snap to grid", DoSnapToGrid), 168, snapSel, snapLocked));
+        }
+
+        private UIElement BuildRenumberCard()
+        {
+            UIElement f0 = LabeledField("Row band mm", Settings.GetValue("RnRow", "5.000"),
+                                        "Parts within this band of each other count as one row",
+                                        out rnRow);
+
+            rnSel = SideCheck("Selection only", Settings.GetValue("RnSel", "0") != "0");
+            rnTopDown = SideCheck("Top row first", Settings.GetValue("RnTopDown", "1") != "0");
+
+            DockPanel actions = new DockPanel();
+            actions.LastChildFill = false;
+
+            Button apply = PrimaryButton("Apply renumber", 32);
+            apply.MinWidth = 150;
+            apply.Click += delegate { DoRenumber(true); };
+            DockPanel.SetDock(apply, Dock.Right);
+            actions.Children.Add(apply);
+
+            Button propose = SecondaryButton("Propose only", 32, 12);
+            propose.MinWidth = 130;
+            propose.Margin = new Thickness(0, 0, 8, 0);
+            propose.Click += delegate { DoRenumber(false); };
+            DockPanel.SetDock(propose, Dock.Right);
+            actions.Children.Add(propose);
+
+            StackPanel opts = new StackPanel();
+            opts.Orientation = Orientation.Horizontal;
+            opts.VerticalAlignment = VerticalAlignment.Center;
+            opts.Children.Add(rnSel);
+            rnTopDown.Margin = new Thickness(14, 0, 0, 0);
+            opts.Children.Add(rnTopDown);
+            DockPanel.SetDock(opts, Dock.Left);
+            actions.Children.Add(opts);
+
+            return ToolCard("Renumber designators", "DESYNCS THE SCHEMATIC", Hex("#3D2A2A"), Hex("#5F3535"), Hex("#E89797"),
+                "Renumbers by position — rows from the top, left to right inside a row, counting per " +
+                "prefix. Propose first: it writes renumber_proposal.csv and changes nothing. Apply renames " +
+                "on the PCB only, through a scratch name so R3→R1 cannot collide with the R1 that still " +
+                "exists, and leaves the schematic out of step until you run Design > Update Schematics.",
+                FieldRow(f0), actions);
+        }
+
+        // ---------------- polygons ----------------
+
+        private UIElement BuildPolygonsSection()
+        {
+            rpStale = SideCheck("Stale only", Settings.GetValue("RpStale", "1") != "0");
+            rpSel = SideCheck("Selection only", Settings.GetValue("RpSel", "0") != "0");
+
+            return Stack(
+                ToolCard("Polygon report", "FINDS STALE COPPER", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                    "Every polygon with its pour settings and, more to the point, whether its copper is " +
+                    "current. A polygon not repoured since the last edit shows the copper it had then — on " +
+                    "screen, in DRC and in Gerber — so a ground pour with a hole under a part you moved an " +
+                    "hour ago looks right everywhere and arrives wrong. Polygons set to ignore violations " +
+                    "are flagged too: their DRC results mean nothing.",
+                    null, ActionRow(Go("Export polygons", DoPolygonReport), 178)),
+
+                ToolCard("Repour", "MODIFIES BOARD", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                    "Rebuilds polygons whose copper is out of date. Pour order is left alone, so overlapping " +
+                    "polygons keep the precedence they already had — reordering them silently would move " +
+                    "copper on a board someone has signed off.",
+                    null, ActionRow(Go("Repour polygons", DoRepour), 178, rpStale, rpSel)));
         }
 
         // ---------------- geometry ----------------
@@ -1376,6 +1560,12 @@ namespace AltiumSpike
                     "Spaces three or more selected objects evenly, keeping the outermost two where they are. " +
                     "Objects are sorted by position first, so nothing shuffles past anything else.",
                     null, dist),
+
+                ToolCard("Flip components", "MODIFIES BOARD", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                    "Flips the selected components to the other side. Uses Altium's own FlipComponent, which " +
+                    "moves the layer, mirrors the footprint and carries the designator with it — doing it by " +
+                    "hand gets the pads right and the silkscreen backwards.",
+                    null, ActionRow(Go("Flip selected", DoFlip), 168)),
 
                 ToolCard("Scale selection", null, null, null, null,
                     "Scales selected geometry about the centre of its own extent. Track widths, hole sizes " +
@@ -1444,7 +1634,14 @@ namespace AltiumSpike
 
                 ToolCard("Layer visibility", null, null, null, null,
                     "Shows or hides every signal layer at once.",
-                    null, vis));
+                    null, vis),
+
+                ToolCard("Mechanical layer map", null, null, null, null,
+                    "Every mechanical layer with its name, whether it is enabled, visible and paired, and " +
+                    "how many primitives are actually on it. Mechanical layers carry no fixed meaning — one " +
+                    "board's assembly drawing is another's courtyard — so before handing files over this is " +
+                    "the sheet that says which layer is which, and which ones are empty and can be dropped.",
+                    null, ActionRow(Go("Export layer map", DoMechLayerNames), 178)));
         }
 
         // ---------------- variants ----------------
@@ -1527,7 +1724,78 @@ namespace AltiumSpike
 
         private UIElement BuildCleanupSection()
         {
-            return Stack(BuildInvalidCard(), BuildAntennaCard(), BuildDanglingCard());
+            return Stack(BuildInvalidCard(), BuildAntennaCard(), BuildDanglingCard(),
+                         BuildDuplicateCard(), BuildLockRoutingCard());
+        }
+
+        private UIElement BuildDuplicateCard()
+        {
+            UIElement f0 = LabeledField("Tolerance mm", Settings.GetValue("DupTol", "0.001"),
+                                        "How close two endpoints must be to count as the same", out dupTol);
+
+            DockPanel actions = new DockPanel();
+            actions.LastChildFill = false;
+
+            Button del = PrimaryButton("Delete duplicates", 32);
+            del.MinWidth = 150;
+            del.Click += delegate { DoDuplicates(true); };
+            DockPanel.SetDock(del, Dock.Right);
+            actions.Children.Add(del);
+
+            Button find = SecondaryButton("Find only", 32, 12);
+            find.MinWidth = 110;
+            find.Margin = new Thickness(0, 0, 8, 0);
+            find.Click += delegate { DoDuplicates(false); };
+            DockPanel.SetDock(find, Dock.Right);
+            actions.Children.Add(find);
+
+            return ToolCard("Duplicate tracks", null, null, null, null,
+                "Track segments lying exactly on top of each other — from re-routing over an existing path, " +
+                "or paste-in-place. They look and behave like one track but emit two identical draws into " +
+                "Gerber. Find only selects the duplicates and leaves one copy of each unselected, so deleting " +
+                "the selection keeps the routing intact.",
+                FieldRow(f0), actions);
+        }
+
+        private UIElement BuildLockRoutingCard()
+        {
+            UIElement f0 = LabeledField("Net filter", Settings.GetValue("LrNet", ""),
+                                        "Exact net name, or a prefix ending in *; blank for every net",
+                                        out lrNet);
+
+            lrVias = SideCheck("Vias too", Settings.GetValue("LrVias", "1") != "0");
+            lrSel = SideCheck("Selection only", Settings.GetValue("LrSel", "0") != "0");
+
+            DockPanel actions = new DockPanel();
+            actions.LastChildFill = false;
+
+            Button lockb = PrimaryButton("Lock routing", 32);
+            lockb.MinWidth = 140;
+            lockb.Click += delegate { DoLockRouting(true); };
+            DockPanel.SetDock(lockb, Dock.Right);
+            actions.Children.Add(lockb);
+
+            Button unlock = SecondaryButton("Unlock", 32, 12);
+            unlock.MinWidth = 110;
+            unlock.Margin = new Thickness(0, 0, 8, 0);
+            unlock.Click += delegate { DoLockRouting(false); };
+            DockPanel.SetDock(unlock, Dock.Right);
+            actions.Children.Add(unlock);
+
+            StackPanel opts = new StackPanel();
+            opts.Orientation = Orientation.Horizontal;
+            opts.VerticalAlignment = VerticalAlignment.Center;
+            opts.Children.Add(lrVias);
+            lrSel.Margin = new Thickness(14, 0, 0, 0);
+            opts.Children.Add(lrSel);
+            DockPanel.SetDock(opts, Dock.Left);
+            actions.Children.Add(opts);
+
+            return ToolCard("Lock net routing", "MODIFIES BOARD", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                "Locks every track, arc and via on the matching nets, so finished routing survives a stray " +
+                "drag. Altium locks components readily; locking a net's copper otherwise means selecting it " +
+                "all first. \"DDR*\" matches every net starting DDR.",
+                FieldRow(f0), actions);
         }
 
         private UIElement BuildInvalidCard()
@@ -1586,7 +1854,36 @@ namespace AltiumSpike
 
         private UIElement BuildReportsSection()
         {
+            DockPanel selfTest = new DockPanel();
+            selfTest.LastChildFill = false;
+
+            Button full = PrimaryButton("Run full self-test", 32);
+            full.MinWidth = 168;
+            full.Click += delegate { DoSelfTest(true); };
+            DockPanel.SetDock(full, Dock.Right);
+            selfTest.Children.Add(full);
+
+            Button ro = SecondaryButton("Read-only self-test", 32, 12);
+            ro.MinWidth = 168;
+            ro.Margin = new Thickness(0, 0, 8, 0);
+            ro.Click += delegate { DoSelfTest(false); };
+            DockPanel.SetDock(ro, Dock.Right);
+            selfTest.Children.Add(ro);
+
             return Stack(
+                ToolCard("Self-test", "VERIFIES EVERYTHING", Hex("#22382C"), Hex("#2F5540"), Hex("#7FD6A6"),
+                    "Runs every function against this board and writes spike_selftest.md with a verdict per " +
+                    "check — comparing counts, coordinates and file contents, not just checking nothing threw. " +
+                    "The full run also exercises the board-modifying tools: they build their own geometry in a " +
+                    "clear area well off the board, read it back, and leave it there as evidence.",
+                    null, selfTest),
+                ToolCard("Single-pin nets", "FINDS DESIGN ERRORS", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                    "Nets that reach exactly one pin — a wire that goes nowhere: a net label that never found " +
+                    "its partner, a pin renamed on one side of a hierarchy, a power net whose only other " +
+                    "connection was deleted. DRC does not flag it because there is no violation, the net is " +
+                    "simply lonely. Nets reaching no pin at all are reported separately.",
+                    null, ActionRow(Go("Find single-pin nets", DoSinglePinNets), 178)),
+
                 ToolCard("Board census", null, null, null, null,
                     "What the board is made of: every object type counted, and copper primitives per layer, " +
                     "plus net, component, class and rule totals.",
@@ -1601,7 +1898,13 @@ namespace AltiumSpike
                 ToolCard("Unrouted connections", null, null, null, null,
                     "Pin pairs that still have unrouted length. Net-level state is no use here — a net counts " +
                     "as routed as soon as any copper is on it, so a fly-by net missing one hop looks finished.",
-                    null, ActionRow(Go("Export unrouted", DoUnrouted), 168)));
+                    null, ActionRow(Go("Export unrouted", DoUnrouted), 168)),
+
+                ToolCard("Net class report", null, null, null, null,
+                    "Every net class with its members, and — separately — the nets belonging to no class at " +
+                    "all. Design rules are scoped by class, so a net that fell out of one is a net running " +
+                    "with default clearance and width while the report says the rules are in place.",
+                    null, ActionRow(Go("Export net classes", DoNetClassReport), 178)));
         }
 
         // ---------------- via tools ----------------
@@ -2908,6 +3211,491 @@ namespace AltiumSpike
                 ShowResult("Dangling check failed", Red, ex.GetType().Name + " — " + ex.Message);
                 SetStatus("Dangling check failed", Red);
             }
+        }
+
+        private void DoSinglePinNets()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                NetTools.Result r = NetTools.SinglePinNets(s, b, folder, true);
+
+                List<string> lines = new List<string>();
+                lines.Add(r.Scanned + " net(s) scanned");
+                foreach (string n in r.Notes) lines.Add(n);
+                if (r.CsvPath.Length > 0) lines.Add(r.CsvPath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult(r.Found == 0 ? "Every net reaches two pins" : "Single-pin nets found",
+                           r.Found == 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Found == 0 ? "No single-pin nets" : r.Found + " single-pin nets",
+                          r.Found == 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Single-pin nets", ex); }
+        }
+
+        private void DoDuplicates(bool delete)
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                double tol;
+                if (!TryMM(dupTol.Text, out tol) || tol <= 0.0)
+                { Complain("Tolerance must be a number greater than 0."); return; }
+                Settings.SetValue("DupTol", dupTol.Text.Trim());
+
+                NetTools.Result r = NetTools.DuplicateTracks(s, b, tol, delete);
+
+                List<string> lines = new List<string>();
+                lines.Add(r.Scanned + " track(s) scanned, " + r.Found + " duplicate(s)");
+                foreach (string n in r.Notes) lines.Add(n);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult(r.Found == 0 ? "No duplicate tracks"
+                                        : (delete ? "Duplicates removed" : "Duplicates found"),
+                           r.Found == 0 ? Green : (delete ? Green : Amber), lines.ToArray());
+                SetStatus(r.Found == 0 ? "No duplicates"
+                                       : (delete ? r.Removed + " removed" : r.Found + " found"),
+                          r.Found == 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Duplicate tracks", ex); }
+        }
+
+        private void DoLockRouting(bool lockIt)
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                NetTools.LockOptions o = new NetTools.LockOptions();
+                o.NetFilter = (lrNet.Text ?? "").Trim();
+                o.Lock = lockIt;
+                o.IncludeVias = lrVias.IsChecked == true;
+                o.OnlySelection = lrSel.IsChecked == true;
+
+                Settings.SetValue("LrNet", o.NetFilter);
+                Settings.SetValue("LrVias", o.IncludeVias ? "1" : "0");
+                Settings.SetValue("LrSel", o.OnlySelection ? "1" : "0");
+
+                NetTools.Result r = NetTools.LockRouting(s, b, o);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                foreach (string e in r.Errors) lines.Add(e);
+                if (r.Changed > 0) lines.Add("Moveable is inverted in Altium — locked means Moveable=false.");
+
+                ShowResult(r.Changed > 0 ? (lockIt ? "Routing locked" : "Routing unlocked") : "Nothing matched",
+                           r.Changed > 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Changed + " primitives " + (lockIt ? "locked" : "unlocked"),
+                          r.Changed > 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Lock routing", ex); }
+        }
+
+        private void DoFlip()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                Geometry.Result r = Geometry.FlipComponents(s, b);
+
+                if (r.Applied == 0)
+                {
+                    ShowResult("Nothing flipped", Amber,
+                        r.Errors.Count > 0 ? r.Errors.ToArray() : new string[] { "No components selected." });
+                    SetStatus("Nothing flipped", Amber);
+                    return;
+                }
+
+                List<string> lines = new List<string>();
+                lines.Add(r.Applied + " component(s) flipped of " + r.Considered + " selected");
+                if (r.Skipped > 0) lines.Add(r.Skipped + " skipped");
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult("Components flipped", Green, lines.ToArray());
+                SetStatus(r.Applied + " components flipped", Green);
+            }
+            catch (Exception ex) { Fail("Flip components", ex); }
+        }
+
+        private void DoOffBoard()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                double margin;
+                if (!TryMM(obMargin.Text, out margin) || margin < 0.0)
+                { Complain("Margin must be a number of 0 or more."); return; }
+
+                bool sel = obSelect.IsChecked == true;
+                Settings.SetValue("ObMargin", obMargin.Text.Trim());
+                Settings.SetValue("ObSelect", sel ? "1" : "0");
+
+                Placement.Result r = Placement.OffBoard(s, b, margin, folder, sel);
+
+                List<string> lines = new List<string>();
+                lines.Add(r.Scanned + " component(s) checked");
+                foreach (string n in r.Notes) lines.Add(n);
+                if (r.CsvPath.Length > 0) lines.Add(r.CsvPath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult(r.Found == 0 ? "Everything is on the board" : "Components past the edge",
+                           r.Found == 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Found == 0 ? "All inside the outline" : r.Found + " off the board",
+                          r.Found == 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Off-board components", ex); }
+        }
+
+        private void DoCollisions()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                double clear;
+                if (!TryMM(colClear.Text, out clear) || clear < 0.0)
+                { Complain("Clearance must be a number of 0 or more."); return; }
+
+                bool sel = colSelect.IsChecked == true;
+                Settings.SetValue("ColClear", colClear.Text.Trim());
+                Settings.SetValue("ColSelect", sel ? "1" : "0");
+
+                Placement.Result r = Placement.Collisions(s, b, clear, folder, sel);
+
+                List<string> lines = new List<string>();
+                lines.Add(r.Scanned + " component(s) checked");
+                foreach (string n in r.Notes) lines.Add(n);
+                if (r.CsvPath.Length > 0) lines.Add(r.CsvPath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult(r.Found == 0 ? "No bodies overlap" : "Overlapping bodies",
+                           r.Found == 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Found == 0 ? "No collisions" : r.Found + " pairs",
+                          r.Found == 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Component collisions", ex); }
+        }
+
+        private void DoAlignRotation()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                double deg;
+                if (!TryMM(rotAngle.Text, out deg))
+                { Complain("Rotation must be a number of degrees."); return; }
+                Settings.SetValue("RotAngle", rotAngle.Text.Trim());
+
+                Placement.Result r = Placement.AlignRotation(s, b, deg);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult(r.Changed > 0 ? "Rotation aligned" : "Nothing changed",
+                           r.Changed > 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Changed + " components rotated", r.Changed > 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Align rotation", ex); }
+        }
+
+        private void DoSnapToGrid()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                double grid;
+                if (!TryMM(snapGrid.Text, out grid) || grid <= 0.0)
+                { Complain("Grid must be a number greater than 0."); return; }
+
+                bool sel = snapSel.IsChecked == true;
+                bool skipLocked = snapLocked.IsChecked == true;
+                Settings.SetValue("SnapGrid", snapGrid.Text.Trim());
+                Settings.SetValue("SnapSel", sel ? "1" : "0");
+                Settings.SetValue("SnapLocked", skipLocked ? "1" : "0");
+
+                Placement.Result r = Placement.SnapToGrid(s, b, grid, sel, skipLocked);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult(r.Changed > 0 ? "Snapped to grid" : "Nothing moved",
+                           r.Changed > 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Changed + " components snapped", r.Changed > 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Snap to grid", ex); }
+        }
+
+        private void DoRenumber(bool apply)
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                Placement.RenumberOptions o = new Placement.RenumberOptions();
+
+                double band;
+                if (!TryMM(rnRow.Text, out band) || band <= 0.0)
+                { Complain("Row band must be a number greater than 0."); return; }
+                o.RowHeightMM = band;
+                o.OnlySelection = rnSel.IsChecked == true;
+                o.TopToBottom = rnTopDown.IsChecked == true;
+                o.Apply = apply;
+
+                Settings.SetValue("RnRow", rnRow.Text.Trim());
+                Settings.SetValue("RnSel", o.OnlySelection ? "1" : "0");
+                Settings.SetValue("RnTopDown", o.TopToBottom ? "1" : "0");
+
+                Placement.Result r = Placement.Renumber(s, b, o, folder);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                if (r.CsvPath.Length > 0) lines.Add(r.CsvPath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                if (apply)
+                {
+                    ShowResult(r.Changed > 0 ? "Designators renumbered" : "Nothing renamed",
+                               r.Changed > 0 ? Amber : Green, lines.ToArray());
+                    SetStatus(r.Changed + " renamed — schematic now out of step",
+                              r.Changed > 0 ? Amber : Green);
+                }
+                else
+                {
+                    ShowResult("Proposal written — nothing changed", Green, lines.ToArray());
+                    SetStatus(r.Found + " would change", Green);
+                }
+            }
+            catch (Exception ex) { Fail("Renumber designators", ex); }
+        }
+
+        private void DoPolygonReport()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                Polygons.Result r = Polygons.Report(s, b, folder);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                if (r.CsvPath.Length > 0) lines.Add(r.CsvPath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult(r.Stale > 0 ? "Stale copper found" : "Polygon report written",
+                           r.Stale > 0 ? Amber : Green, lines.ToArray());
+                SetStatus(r.Stale > 0 ? r.Stale + " need repouring" : r.Found + " polygons",
+                          r.Stale > 0 ? Amber : Green);
+            }
+            catch (Exception ex) { Fail("Polygon report", ex); }
+        }
+
+        private void DoRepour()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                bool stale = rpStale.IsChecked == true;
+                bool sel = rpSel.IsChecked == true;
+                Settings.SetValue("RpStale", stale ? "1" : "0");
+                Settings.SetValue("RpSel", sel ? "1" : "0");
+
+                Polygons.Result r = Polygons.Repour(s, b, stale, sel);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult(r.Changed > 0 ? "Polygons repoured" : "Nothing to repour",
+                           r.Changed > 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Changed + " repoured", r.Changed > 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Repour polygons", ex); }
+        }
+
+        private void DoSilkOverPads()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                bool sel = sopSelect.IsChecked == true;
+                Settings.SetValue("SopSelect", sel ? "1" : "0");
+
+                DfmTools.Result r = DfmTools.SilkOverPads(s, b, folder, sel);
+
+                List<string> lines = new List<string>();
+                lines.Add(r.Scanned + " overlay primitive(s) checked");
+                foreach (string n in r.Notes) lines.Add(n);
+                if (r.CsvPath.Length > 0) lines.Add(r.CsvPath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult(r.Found == 0 ? "No silkscreen on pads" : "Silkscreen clashes found",
+                           r.Found == 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Found == 0 ? "Silkscreen clear" : r.Found + " clashes",
+                          r.Found == 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Silkscreen over pads", ex); }
+        }
+
+        private void DoPasteGrid()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                DfmTools.PasteOptions o = new DfmTools.PasteOptions();
+
+                double min;
+                if (!TryMM(pgMin.Text, out min) || min <= 0.0)
+                { Complain("Minimum pad size must be a number greater than 0."); return; }
+                o.MinPadMM = min;
+
+                double cov;
+                if (!TryMM(pgCoverage.Text, out cov) || cov <= 0.0 || cov >= 100.0)
+                { Complain("Coverage must be between 0 and 100 percent."); return; }
+                o.CoveragePercent = cov;
+
+                double div;
+                if (!TryMM(pgDiv.Text, out div) || div < 2.0 || div > 10.0 || div != Math.Floor(div))
+                { Complain("Divisions must be a whole number between 2 and 10."); return; }
+                o.Divisions = (int)div;
+
+                o.OnlySelection = pgSel.IsChecked == true;
+
+                Settings.SetValue("PgMin", pgMin.Text.Trim());
+                Settings.SetValue("PgCoverage", pgCoverage.Text.Trim());
+                Settings.SetValue("PgDiv", pgDiv.Text.Trim());
+                Settings.SetValue("PgSel", o.OnlySelection ? "1" : "0");
+
+                DfmTools.Result r = DfmTools.PasteGrid(s, b, o);
+
+                List<string> lines = new List<string>();
+                lines.Add(r.Scanned + " pad(s) scanned, " + r.Found + " large enough");
+                foreach (string n in r.Notes) lines.Add(n);
+                foreach (string e in r.Errors) lines.Add(e);
+                if (r.Changed > 0)
+                    lines.Add("Paste expansion was flagged manual on each pad, so the paste rule will not " +
+                              "overwrite it.");
+
+                ShowResult(r.Changed > 0 ? "Paste grids built" : "Nothing changed",
+                           r.Changed > 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Changed + " pads gridded", r.Changed > 0 ? Green : Amber);
+            }
+            catch (Exception ex) { Fail("Paste grid", ex); }
+        }
+
+        private void DoNetClassReport()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                DfmTools.Result r = DfmTools.NetClassReport(b, folder);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                if (r.CsvPath.Length > 0) lines.Add(r.CsvPath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult("Net class report written", r.Errors.Count == 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Found + " classes", Green);
+            }
+            catch (Exception ex) { Fail("Net class report", ex); }
+        }
+
+        private void DoMechLayerNames()
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                DfmTools.Result r = DfmTools.MechLayerNames(s, b, folder);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                if (r.CsvPath.Length > 0) lines.Add(r.CsvPath);
+                foreach (string e in r.Errors) lines.Add(e);
+
+                ShowResult("Mechanical layer map written", r.Errors.Count == 0 ? Green : Amber, lines.ToArray());
+                SetStatus(r.Found + " layers in use", Green);
+            }
+            catch (Exception ex) { Fail("Mechanical layer map", ex); }
+        }
+
+        private void DoSelfTest(bool includeModifying)
+        {
+            try
+            {
+                IPCB_ServerInterface s; IPCB_Board b;
+                if (!Board(out s, out b)) return;
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                SetStatus("Running self-test…", Amber);
+                SelfTest.Report rep = SelfTest.Run(client, s, b, folder, includeModifying);
+
+                List<string> lines = new List<string>();
+                lines.Add(rep.Headline());
+                foreach (SelfTest.Check c in rep.Checks)
+                    if (c.Verdict == SelfTest.Verdict.Fail)
+                        lines.Add("FAILED — " + c.Name + ": " + c.Actual);
+                if (rep.Path.Length > 0) lines.Add(rep.Path);
+
+                ShowResult(rep.Failed == 0 ? "Self-test passed" : "Self-test found failures",
+                           rep.Failed == 0 ? Green : Red, lines.ToArray());
+                SetStatus(rep.Headline(), rep.Failed == 0 ? Green : Red);
+            }
+            catch (Exception ex) { Fail("Self-test", ex); }
         }
 
         // ---------------- report handlers ----------------

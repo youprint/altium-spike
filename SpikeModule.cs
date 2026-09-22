@@ -121,6 +121,11 @@ namespace AltiumSpike
             Register(launcher, "PackageRelease", RunPackageRelease);
             Register(launcher, "AltiumSpike:PackageRelease", RunPackageRelease);
 
+            Register(launcher, "SelfTest", RunSelfTest);
+            Register(launcher, "AltiumSpike:SelfTest", RunSelfTest);
+            Register(launcher, "SelfTestFull", RunSelfTestFull);
+            Register(launcher, "AltiumSpike:SelfTestFull", RunSelfTestFull);
+
             Log.Write("InitializeCommands finished");
         }
 
@@ -553,6 +558,55 @@ namespace AltiumSpike
                 Log.Say(title, "FAILED: " + ex.GetType().Name + " -- " + ex.Message);
             }
             Log.Write("<<< RunPackageRelease returned");
+        }
+
+        // --- SelfTest: run every function and report ---
+        //
+        // Two commands rather than a parameter, so the destructive half can
+        // never be reached by accident from a menu or a shortcut.
+
+        private void RunSelfTest(IServerDocumentView view, ref string parameters)
+        {
+            SelfTest(false);
+        }
+
+        private void RunSelfTestFull(IServerDocumentView view, ref string parameters)
+        {
+            SelfTest(true);
+        }
+
+        private void SelfTest(bool includeModifying)
+        {
+            string title = includeModifying ? "AltiumSpike Self-Test (full)" : "AltiumSpike Self-Test";
+            Log.Write(">>> " + title + " DISPATCHED");
+            try
+            {
+                IPCB_ServerInterface pcbServer;
+                IPCB_Board board;
+                if (!TryGetPcb(title, out pcbServer, out board)) return;
+
+                string folder = Settings.ResolveOutputFolder();
+                if (folder == null) { Log.Write("SelfTest: folder selection cancelled"); return; }
+
+                AltiumSpike.SelfTest.Report rep =
+                    AltiumSpike.SelfTest.Run(client, pcbServer, board, folder, includeModifying);
+
+                string msg = rep.Headline() + "\n\n";
+                foreach (AltiumSpike.SelfTest.Check c in rep.Checks)
+                {
+                    if (c.Verdict == AltiumSpike.SelfTest.Verdict.Fail)
+                        msg += "FAILED: " + c.Name + " -- " + c.Actual + "\n";
+                }
+                msg += "\nFull report: " + rep.Path;
+
+                Log.Say(title, msg);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("SelfTest", ex);
+                Log.Say(title, "FAILED: " + ex.GetType().Name + " -- " + ex.Message);
+            }
+            Log.Write("<<< " + title + " returned");
         }
 
         // Same comma/point tolerance as the window: the settings file holds
