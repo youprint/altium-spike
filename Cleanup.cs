@@ -272,10 +272,19 @@ namespace AltiumSpike
                 {
                     try
                     {
+                        // Copper only. Counting unnetted primitives before
+                        // testing the layer counted every silkscreen line as
+                        // unnetted copper -- 415 of them on a board whose
+                        // copper layers hold one primitive.
+                        bool copper = true;
+                        TObjectId kind0 = p.GetState_ObjectID();
+                        if (kind0 != TObjectId.ePadObject && kind0 != TObjectId.eViaObject)
+                        { try { copper = lu.IsElectricalLayer(p.GetState_V7Layer()); } catch { copper = false; } }
+
                         IPCB_Net n = p.GetState_Net();
                         string net = n == null ? "" : (n.GetState_Name() ?? "");
-                        if (net.Length == 0) res.SkippedNoNet++;
-                        if (net.Length > 0)
+                        if (copper && net.Length == 0) res.SkippedNoNet++;
+                        if (copper && net.Length > 0)
                         {
                             string layer = "";
                             try { layer = lu.AsString(p.GetState_V7Layer()); } catch { }
@@ -428,10 +437,19 @@ namespace AltiumSpike
                 {
                     try
                     {
+                        // Copper only. Counting unnetted primitives before
+                        // testing the layer counted every silkscreen line as
+                        // unnetted copper -- 415 of them on a board whose
+                        // copper layers hold one primitive.
+                        bool copper = true;
+                        TObjectId kind0 = p.GetState_ObjectID();
+                        if (kind0 != TObjectId.ePadObject && kind0 != TObjectId.eViaObject)
+                        { try { copper = lu.IsElectricalLayer(p.GetState_V7Layer()); } catch { copper = false; } }
+
                         IPCB_Net n = p.GetState_Net();
                         string net = n == null ? "" : (n.GetState_Name() ?? "");
-                        if (net.Length == 0) res.SkippedNoNet++;
-                        if (net.Length > 0)
+                        if (copper && net.Length == 0) res.SkippedNoNet++;
+                        if (copper && net.Length > 0)
                         {
                             string layer = "";
                             try { layer = lu.AsString(p.GetState_V7Layer()); } catch { }

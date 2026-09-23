@@ -196,20 +196,24 @@ namespace AltiumSpike
             Connectivity.CacheCopperLayers(pcbServer, board);
 
             int unnetted = 0;
+            int copperSegs = 0;
             r.Run("Unnetted copper", "every copper primitive is accounted for as netted or not", delegate
             {
                 Connectivity.Result x = Connectivity.UnnettedCopper(pcbServer, board, folder, false);
                 if (x.Scanned == 0)
                     return "FAIL: no copper primitives found at all, but the board has " + tracks + " tracks";
 
-                // THE SCAN MUST SEE EVERY TRACK. The first version filtered
-                // copper by layer NAME and admitted 87 primitives out of 310 --
-                // every pad, not one track -- then reported "all copper belongs
-                // to a net" while the current-capacity check found 300 with no
-                // net. Coverage is asserted here so that cannot recur quietly.
-                if (x.Scanned < tracks)
+                // NOT "scanned >= tracks". That was the previous assertion and
+                // it was wrong: a track is not necessarily copper. On this
+                // board 408 of 416 track/arc primitives are on Top Overlay --
+                // they are the footprints' silkscreen outlines. Demanding the
+                // copper scan see all of them failed a function that was right.
+                //
+                // What must hold is that every PAD is seen, since a pad is
+                // copper by construction whatever layer it reports.
+                if (x.Scanned < pads)
                     return "FAIL: scanned " + x.Scanned + " copper primitive(s) but the board has " +
-                           tracks + " tracks alone -- the copper filter is excluding real copper";
+                           pads + " pads, and a pad is copper whatever layer it sits on";
 
                 unnetted = x.Found;
 
@@ -227,6 +231,45 @@ namespace AltiumSpike
                        "board, and it is why the net-scoped checks below have nothing to work with";
             });
 
+            r.Run("Is this board routed", "copper layers hold conductors, or say plainly that they do not", delegate
+            {
+                // Worth its own line because three separate checks reporting
+                // zero were read as three bugs before anyone established the
+                // simple fact that there is nothing on the copper layers.
+                int onCopper = 0, offCopper = 0;
+                IPCB_LayerUtils lu = pcbServer.LayerUtils();
+
+                IPCB_BoardIterator it = board.BoardIterator_Create();
+                try
+                {
+                    it.AddFilter_ObjectSet(new TObjectSet(new TObjectId[] {
+                        TObjectId.eTrackObject, TObjectId.eArcObject }));
+                    it.AddFilter_AllLayers();
+                    it.AddFilter_Method(TIterationMethod.eProcessAll);
+                    IPCB_Primitive p = it.FirstPCBObject();
+                    while (p != null)
+                    {
+                        bool cu = false;
+                        try { cu = lu.IsElectricalLayer(p.GetState_V7Layer()); } catch { }
+                        if (cu) onCopper++; else offCopper++;
+                        p = it.NextPCBObject();
+                    }
+                }
+                catch { }
+                finally { board.BoardIterator_Destroy(ref it); }
+
+                copperSegs = onCopper;
+
+                if (onCopper == 0)
+                    return "PASS: THIS BOARD IS NOT ROUTED — 0 of " + (onCopper + offCopper) +
+                           " tracks and arcs are on a copper layer; the rest are silkscreen and " +
+                           "mechanical drawing. Zero routed length, zero rated nets and zero checked " +
+                           "endpoints are all correct answers here, not failures";
+
+                return "PASS: " + onCopper + " track(s) and arc(s) on copper layers, " + offCopper +
+                       " on silkscreen and mechanical layers";
+            });
+
             r.Run("Measured net lengths", "measured length is consistent with the copper present", delegate
             {
                 Connectivity.Result x = Connectivity.MeasureNets(pcbServer, board, folder);
@@ -236,16 +279,11 @@ namespace AltiumSpike
                 // The scan must see every netted track. Tracks that are
                 // unnetted are counted by the check above, so the two together
                 // have to account for all of them.
-                if (x.Scanned + unnetted < tracks)
-                    return "FAIL: " + x.Scanned + " netted + " + unnetted + " unnetted is fewer than the " +
-                           tracks + " tracks on the board -- copper is going unaccounted for";
-
                 if (x.Scanned == 0)
                     return "PASS: no netted copper to measure, consistent with " + unnetted +
-                           " unnetted primitive(s)";
+                           " unnetted copper primitive(s) — see whether this board is routed at all";
 
-                return "PASS: " + x.Scanned + " netted segment(s) measured across " + x.Found +
-                       " net(s); " + x.Scanned + " + " + unnetted + " accounts for all " + tracks + " tracks";
+                return "PASS: " + x.Scanned + " netted copper segment(s) measured across " + x.Found + " net(s)";
             });
 
             // --- Import / Export ---
@@ -318,16 +356,17 @@ namespace AltiumSpike
                 // Zero everywhere. Whether that is this function's fault turns
                 // entirely on whether the copper is on a net at all, which the
                 // connectivity check above already established.
-                if (tracks == 0)
-                    return "PASS: " + x.NetRows + " nets written, all zero — the board has no tracks";
-
-                if (unnetted >= tracks)
+                // Zero routed length is the right answer on an unrouted board,
+                // and whether it is routed is settled by what sits on the
+                // copper layers, not by the raw track count -- silkscreen
+                // outlines are tracks too.
+                if (copperSegs == 0)
                     return "PASS: " + x.NetRows + " nets written and every routed length is zero, which is " +
-                           "CORRECT here: all " + tracks + " tracks carry no net, so no net has any copper. " +
-                           "The fault is in the board, not the export — see the measured-length report";
+                           "CORRECT: nothing on this board sits on a copper layer, so there is no routing " +
+                           "to have a length";
 
-                return "FAIL: " + x.NetRows + " nets written, every routed length zero, with " + tracks +
-                       " tracks on the board of which only " + unnetted + " are unnetted";
+                return "FAIL: " + x.NetRows + " nets written, every routed length zero, with " + copperSegs +
+                       " track(s)/arc(s) on copper layers of which " + unnetted + " are unnetted";
             });
 
             r.Run("Board census export", "object counts agree with the baseline", delegate
@@ -429,8 +468,9 @@ namespace AltiumSpike
                 if (x.Polygons == 0)
                     return "FAIL: " + polys + " polygons on the board but none were measured";
                 if (x.TotalAreaMM2 <= 0)
-                    return "FAIL: " + x.Polygons + " polygons but total area is zero -- the outline walk " +
-                           "found no vertices and the cached area was zero too";
+                    return "FAIL: " + x.Polygons + " polygon(s) but total area is zero. " +
+                           (x.Errors.Count > 0 ? string.Join("; ", x.Errors.ToArray())
+                                               : "No reason was recorded.");
 
                 // A pour cannot be larger than the board it sits on, by much.
                 // This catches a unit error, which is the way an area goes
@@ -1047,10 +1087,25 @@ namespace AltiumSpike
 
                 o.Title = "SELFTEST STACKUP " + DateTime.Now.ToString("HHmmss", Inv);
 
+                // Two fixes for this have missed, so the run now reports the
+                // measurements instead of a verdict alone: whether text
+                // objects were created at all, and what the first one says.
+                int textBefore = Count(board, TObjectId.eTextObject);
                 StackupTable.Result x = StackupTable.Generate(pcbServer, board, o);
+                int textAfter = Count(board, TObjectId.eTextObject);
 
                 if (x.Rows == 0)
                     return "FAIL: no rows drawn -- " + string.Join("; ", x.Errors.ToArray());
+
+                string diag = "text objects " + textBefore + " -> " + textAfter +
+                              " (" + (textAfter - textBefore) + " added), " +
+                              x.PrimitivesDrawn + " primitives claimed, " +
+                              x.PrimitivesRemoved + " cleared first";
+
+                if (textAfter == textBefore)
+                    return "FAIL: no text object reached the board at all -- " + diag +
+                           ". The lines land and the strings do not, so this is text creation, " +
+                           "not the table";
 
                 // Look for the title ON THE BOARD rather than comparing text
                 // counts before and after. ReplaceExisting deletes the previous
@@ -1058,20 +1113,21 @@ namespace AltiumSpike
                 // and a before/after test reports a failure that is not one --
                 // which is exactly what it did.
                 if (!FindText(board, o.Title))
-                    return "FAIL: reported " + x.PrimitivesDrawn +
-                           " primitives but the title text is not on the board";
+                    return "FAIL: text objects were added but none carries the title -- " + diag +
+                           ". First string actually on the board: \"" + AnyRecentText(board) +
+                           "\" -- so the object is created and its string is not what was set";
 
                 // The title alone could be a fluke; a header cell proves the
                 // body of the table has words in it too.
                 if (!FindText(board, "Layer"))
-                    return "FAIL: the title landed but the column headers did not";
+                    return "FAIL: the title landed but the column headers did not -- " + diag;
                 if (x.BoardThicknessMM <= 0.0)
                     return "FAIL: " + x.Rows + " rows but total thickness is zero";
                 if (x.BoardThicknessMM > 10.0)
                     return "FAIL: total thickness " + F3(x.BoardThicknessMM) + " mm is not a real board";
 
-                return "PASS: " + x.Rows + " layers, " + x.PrimitivesDrawn + " primitives, " +
-                       F3(x.BoardThicknessMM) + " mm finished thickness";
+                return "PASS: " + x.Rows + " layers, title and headers found on the board, " +
+                       F3(x.BoardThicknessMM) + " mm finished thickness (" + diag + ")";
             });
 
             r.Run("Assembly notes", "writes notes with real measured numbers", delegate
@@ -1459,6 +1515,34 @@ namespace AltiumSpike
 
                 return "PASS: " + removed + " scratch object(s) removed; the board is as it was found";
             });
+        }
+
+        // The longest string on the board, as a sample of what text objects
+        // actually contain when a search for an expected one fails.
+        private static string AnyRecentText(IPCB_Board board)
+        {
+            string best = "";
+            IPCB_BoardIterator it = board.BoardIterator_Create();
+            try
+            {
+                it.AddFilter_ObjectSet(new TObjectSet(TObjectId.eTextObject));
+                it.AddFilter_AllLayers();
+                it.AddFilter_Method(TIterationMethod.eProcessAll);
+                IPCB_Text t = it.FirstPCBObject() as IPCB_Text;
+                while (t != null)
+                {
+                    try
+                    {
+                        string v = t.GetState_Text() ?? "";
+                        if (v.Length > best.Length) best = v;
+                    }
+                    catch { }
+                    t = it.NextPCBObject() as IPCB_Text;
+                }
+            }
+            catch { }
+            finally { board.BoardIterator_Destroy(ref it); }
+            return best.Length > 60 ? best.Substring(0, 60) : best;
         }
 
         private static bool FindText(IPCB_Board board, string want)

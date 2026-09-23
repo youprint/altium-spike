@@ -171,11 +171,15 @@ namespace AltiumSpike
                     s += ".\n";
                 }
                 if (SkippedNoNet > 0)
-                    s += SkippedNoNet + " copper primitive(s) carry NO NET and could not be rated -- " +
+                    s += SkippedNoNet + " primitive(s) ON A COPPER LAYER carry no net and could not be rated -- " +
                          "current capacity is reported per net, and copper with no net belongs to none. " +
                          "Run the unnetted copper report in Cleanup to see what they are.\n";
                 if (SkippedOffCopper > 0)
-                    s += SkippedOffCopper + " track(s) sit on a non-copper layer and were ignored.\n";
+                    s += SkippedOffCopper + " track(s) and arc(s) are on non-copper layers (silkscreen, " +
+                         "mechanical) and were ignored -- they are drawings, not conductors.\n";
+                if (TracksScanned == 0 && SkippedOffCopper > 0 && SkippedNoNet == 0)
+                    s += "NOTHING ON THIS BOARD'S COPPER LAYERS WAS FOUND TO RATE. If that is a surprise, " +
+                         "the board is not routed.\n";
                 if (UsedDefaultThickness)
                     s += "Some layers reported no copper thickness; " +
                          opt.DefaultThicknessMM.ToString("0.####", Inv) + " mm was assumed for those.\n";
@@ -215,20 +219,23 @@ namespace AltiumSpike
                     {
                         if (opt.OnlySelection && !p.GetState_Selected()) { p = it.NextPCBObject(); continue; }
 
+                        // LAYER FIRST, THEN NET. Counting unnetted primitives
+                        // before checking the layer counted every silkscreen
+                        // line on the board as "copper with no net" -- 414 of
+                        // them on a board whose copper layers hold exactly one
+                        // primitive. That number then went into the self-test
+                        // report as a finding about the copper, and it was a
+                        // finding about the silkscreen.
+                        string layerName = "";
+                        try { layerName = lu.AsString(p.GetState_V7Layer()); } catch { }
+
+                        if (!layers.ContainsKey(layerName)) { res.SkippedOffCopper++; p = it.NextPCBObject(); continue; }
+
                         IPCB_Net net = p.GetState_Net();
                         if (net == null) { res.SkippedNoNet++; p = it.NextPCBObject(); continue; }
 
                         string netName = net.GetState_Name() ?? "";
                         if (netName.Length == 0) { res.SkippedNoNet++; p = it.NextPCBObject(); continue; }
-
-                        string layerName = "";
-                        try { layerName = lu.AsString(p.GetState_V7Layer()); } catch { }
-
-                        // Only copper carries current. A track on an overlay
-                        // or mechanical layer is a drawing, and letting one
-                        // into this report would rate a net by the width of a
-                        // silkscreen line.
-                        if (!layers.ContainsKey(layerName)) { res.SkippedOffCopper++; p = it.NextPCBObject(); continue; }
 
                         double width = 0.0;
                         double x = 0.0, y = 0.0;
@@ -450,21 +457,30 @@ namespace AltiumSpike
                             // no report. The outline is there, so measure it.
                             List<double> px = new List<double>();
                             List<double> py = new List<double>();
+                            int declared = -1;
+                            string why = "";
                             try
                             {
                                 // GetState_Segments, the same wrapper the board
                                 // outline is read with. Internal_GetState_Segments
                                 // returns an IPolySegment that came back empty on
                                 // a real polygon.
-                                int n = poly.GetState_PointCount();
-                                for (int i = 0; i < n; i++)
+                                declared = poly.GetState_PointCount();
+                                for (int i = 0; i < declared; i++)
                                 {
                                     PolySegment seg = poly.GetState_Segments(i);
                                     px.Add(ToMM(seg.GetVx()));
                                     py.Add(ToMM(seg.GetVy()));
                                 }
                             }
-                            catch { }
+                            catch (Exception pex) { why = pex.GetType().Name + ": " + pex.Message; }
+
+                            // Two guesses at this have already been wrong, so
+                            // the reason is recorded rather than inferred.
+                            if (px.Count == 0)
+                                res.Errors.Add("Polygon outline walk got " + px.Count + " vertices from a " +
+                                               "declared PointCount of " + declared +
+                                               (why.Length > 0 ? " (" + why + ")" : " (no exception)"));
 
                             areaMM2 = PolyGeometry.PolygonArea(px, py);
 
