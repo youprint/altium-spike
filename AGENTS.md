@@ -109,9 +109,14 @@ when touching any of those.
 
 ## Further reading
 
-`claude/altium-csharp-api-notes.md` in the project knowledge base: how to get an
-extension to load at all, the deployment layout, the DelphiScript→C# mapping,
-fill geometry, number formatting, JLCPCB specifics, and the SDK traps that have
-cost the most time here — inverted `Moveable`, mechanical layer names that do
-not round-trip, `GetState_AreaSize` returning zero on a poured polygon, and free
-text that needs its underlying string set before it will draw.
+Two sets of SDK notes are kept outside this repo, in the project knowledge base:
+
+- **API notes** — how to get an extension to load at all, the deployment layout,
+  the DelphiScript→C# mapping, fill geometry, number formatting and the JLCPCB
+  specifics.
+- **PCB object model traps** — the accessors that return a plausible wrong
+  answer without throwing: inverted `Moveable`, mechanical layer names that do
+  not round-trip through `AsString`/`FromString`, every physical layer casting
+  successfully to `IPCB_ElectricalLayer`, `GetState_AreaSize` returning zero on
+  a poured polygon, island thresholds in square coords, and free text that needs
+  its underlying string set before it will draw.
