@@ -83,9 +83,19 @@ namespace AltiumSpike
             t.SetState_XLocation(ToCoord(x));
             t.SetState_YLocation(ToCoord(y));
             t.SetState_Rotation(0.0);
+
+            // BOTH strings. Text is the displayed/converted string and
+            // UnderlyingString is what the object actually stores; a free
+            // string created through the object factory with only Text set
+            // was added to the board and then had nothing to draw, so the
+            // table came out as lines with no words in it and a read-back
+            // could not find its own title.
+            t.SetState_UnderlyingString(s ?? "");
             t.SetState_Text(s ?? "");
+
             t.SetState_Size(ToCoord(heightMM));
             t.SetState_Width(ToCoord(strokeMM));
+            t.SetState_UseTTFonts(false);   // stroke font: no font dependency in Gerber
             t.SetState_V7Layer(layer);
 
             board.AddPCBObject(t);

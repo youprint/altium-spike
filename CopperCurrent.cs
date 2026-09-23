@@ -452,11 +452,14 @@ namespace AltiumSpike
                             List<double> py = new List<double>();
                             try
                             {
+                                // GetState_Segments, the same wrapper the board
+                                // outline is read with. Internal_GetState_Segments
+                                // returns an IPolySegment that came back empty on
+                                // a real polygon.
                                 int n = poly.GetState_PointCount();
                                 for (int i = 0; i < n; i++)
                                 {
-                                    IPolySegment seg = poly.Internal_GetState_Segments(i);
-                                    if (seg == null) continue;
+                                    PolySegment seg = poly.GetState_Segments(i);
                                     px.Add(ToMM(seg.GetVx()));
                                     py.Add(ToMM(seg.GetVy()));
                                 }

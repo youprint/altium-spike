@@ -202,6 +202,15 @@ namespace AltiumSpike
                 if (x.Scanned == 0)
                     return "FAIL: no copper primitives found at all, but the board has " + tracks + " tracks";
 
+                // THE SCAN MUST SEE EVERY TRACK. The first version filtered
+                // copper by layer NAME and admitted 87 primitives out of 310 --
+                // every pad, not one track -- then reported "all copper belongs
+                // to a net" while the current-capacity check found 300 with no
+                // net. Coverage is asserted here so that cannot recur quietly.
+                if (x.Scanned < tracks)
+                    return "FAIL: scanned " + x.Scanned + " copper primitive(s) but the board has " +
+                           tracks + " tracks alone -- the copper filter is excluding real copper";
+
                 unnetted = x.Found;
 
                 int rows = File.ReadAllLines(x.CsvPath).Length - 1;
@@ -691,11 +700,19 @@ namespace AltiumSpike
                 DfmTools.Result x = DfmTools.MechLayerNames(pcbServer, board, folder);
                 if (x.CsvPath.Length == 0) return "FAIL: no CSV written";
 
+                // Layers with nothing on them are deliberately omitted, so
+                // zero rows means no mechanical layer carries content -- which
+                // a freshly opened board legitimately has. An earlier version
+                // called that a failure on the grounds that "Altium always has
+                // these layers"; it has them, they were simply empty.
                 int rows = File.ReadAllLines(x.CsvPath).Length - 1;
+                if (rows != x.Found)
+                    return "FAIL: reported " + x.Found + " layers in use but wrote " + rows + " rows";
                 if (rows == 0)
-                    return "FAIL: the mechanical layer walk produced no rows -- Altium always has these layers";
+                    return "PASS: no mechanical layer carries content on this board, and the report says " +
+                           "so rather than listing empty layers";
 
-                return "PASS: " + rows + " mechanical layers listed, " + x.Found + " carrying primitives";
+                return "PASS: " + rows + " mechanical layer(s) in use, " + x.Scanned + " primitive(s)";
             });
 
             // --- Placement ---
@@ -1043,6 +1060,11 @@ namespace AltiumSpike
                 if (!FindText(board, o.Title))
                     return "FAIL: reported " + x.PrimitivesDrawn +
                            " primitives but the title text is not on the board";
+
+                // The title alone could be a fluke; a header cell proves the
+                // body of the table has words in it too.
+                if (!FindText(board, "Layer"))
+                    return "FAIL: the title landed but the column headers did not";
                 if (x.BoardThicknessMM <= 0.0)
                     return "FAIL: " + x.Rows + " rows but total thickness is zero";
                 if (x.BoardThicknessMM > 10.0)

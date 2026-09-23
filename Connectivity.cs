@@ -108,10 +108,10 @@ namespace AltiumSpike
                         string layer = "";
                         try { layer = lu.AsString(p.GetState_V7Layer()); } catch { }
 
-                        // Only copper layers count. An unnetted track on the
-                        // overlay is a drawing and entirely normal; reporting
-                        // those would bury the finding in silkscreen.
-                        if (!IsCopperLayer(layer)) { p = it.NextPCBObject(); continue; }
+                        // Only copper counts. An unnetted track on the overlay
+                        // is a drawing and entirely normal; reporting those
+                        // would bury the finding in silkscreen.
+                        if (!IsCopper(pcbServer, p)) { p = it.NextPCBObject(); continue; }
 
                         res.Scanned++;
 
@@ -247,48 +247,36 @@ namespace AltiumSpike
             return res;
         }
 
-        // Copper layers by the only test that holds on a renamed stack: ask
-        // the board's own layer stack which layers are electrical.
-        private static HashSet<string> copperNames;
-
-        public static void ResetLayerCache() { copperNames = null; }
-
-        private static bool IsCopperLayer(string layer)
-        {
-            if (copperNames == null) return DefaultCopperGuess(layer);
-            return copperNames.Contains(layer);
-        }
-
-        private static bool DefaultCopperGuess(string layer)
-        {
-            if (string.IsNullOrEmpty(layer)) return false;
-            string l = layer.ToLowerInvariant();
-            if (l.Contains("overlay") || l.Contains("paste") || l.Contains("solder") ||
-                l.Contains("mechanical") || l.Contains("keep") || l.Contains("drill") ||
-                l.Contains("outline")) return false;
-            return l.Contains("layer") || l.Contains("plane") || l.Contains("mid") || l.Contains("internal");
-        }
+        // WHICH LAYERS ARE COPPER IS ASKED OF THE SDK, not guessed from the
+        // layer's name. IPCB_LayerUtils.IsElectricalLayer answers it directly.
+        //
+        // The first version matched names against the electrical stack and
+        // excluded every track on the board while letting pads through -- 87
+        // primitives scanned out of 310, reporting "all copper belongs to a
+        // net" while the current-capacity check, using its own test, found 300
+        // primitives with no net at all. Two checks in one run contradicting
+        // each other, which is how the name-matching got caught.
+        //
+        // Pads and vias are copper by construction: they are usually on
+        // Multi-Layer, which is not an electrical layer, so they are admitted
+        // by kind rather than by layer.
+        private static IPCB_LayerUtils lu_;
 
         public static void CacheCopperLayers(IPCB_ServerInterface pcbServer, IPCB_Board board)
         {
-            HashSet<string> set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            try
-            {
-                IPCB_LayerStack stack = board.GetState_LayerStack();
-                if (stack == null) return;
-                IPCB_LayerUtils lu = pcbServer.LayerUtils();
+            try { lu_ = pcbServer.LayerUtils(); } catch { lu_ = null; }
+        }
 
-                IPCB_LayerObject lo = stack.First(TLayerClassID.eLayerClass_Electrical);
-                int guard = 0;
-                while (lo != null && guard++ < 256)
-                {
-                    try { set.Add(lu.AsString(lo.V7_LayerID())); } catch { }
-                    lo = stack.Next(TLayerClassID.eLayerClass_Electrical, lo);
-                }
-            }
-            catch { }
+        private static bool IsCopper(IPCB_ServerInterface pcbServer, IPCB_Primitive p)
+        {
+            TObjectId id = p.GetState_ObjectID();
+            if (id == TObjectId.ePadObject || id == TObjectId.eViaObject) return true;
 
-            if (set.Count > 0) copperNames = set;
+            IPCB_LayerUtils lu = lu_;
+            if (lu == null) { try { lu = pcbServer.LayerUtils(); } catch { return false; } }
+
+            try { return lu.IsElectricalLayer(p.GetState_V7Layer()); }
+            catch { return false; }
         }
 
         // ==================================================================
@@ -317,9 +305,7 @@ namespace AltiumSpike
                 {
                     try
                     {
-                        string layer = "";
-                        try { layer = lu.AsString(p.GetState_V7Layer()); } catch { }
-                        if (!IsCopperLayer(layer)) { p = it.NextPCBObject(); continue; }
+                        if (!IsCopper(pcbServer, p)) { p = it.NextPCBObject(); continue; }
 
                         string net = "";
                         try
