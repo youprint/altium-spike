@@ -5,6 +5,8 @@ obj/
 # Altium's SDK assemblies are proprietary and must NOT be committed.
 # Copy them from your own Altium installation — see the README.
 Assemblies/
+*.dll
+*.pdb
 
 # Local artefacts
 *.user

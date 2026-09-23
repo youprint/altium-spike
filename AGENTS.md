@@ -1,122 +1,242 @@
-# Working on AltiumSpike
+# AGENTS.md — working on AltiumSpike
 
-Orientation for anyone — person or coding agent — picking this up cold. It is
-about *how to work on it safely*; `README.md` says what it does, and the
-SDK-level facts live in the API notes referenced at the bottom.
+Read this before answering any question or making any change in this repo.
+`README.md` says what the extension does; this file says how to work on it
+without breaking it, and what a good answer looks like here.
 
-## What this is
+---
 
-A C# extension for Altium Designer 26 (.NET 8 + WPF), built against the WPF
-assemblies that ship inside Altium rather than against a NuGet reference pack.
-One window, a left sidebar of sections, and about fifty functions that read or
-edit the open PCB document.
+## 0. Operating contract
 
-## Layout
+1. **Verify before you claim.** Never say a function "works", "should work" or
+   "is fixed" unless it has been built, deployed, and exercised by the
+   self-test on a board. If it has only been compiled, say "compiles, not yet
+   run on a board".
+2. **Confirm every SDK member in metadata before using it** (§4). No guessed
+   member names, ever — they compile and fail silently.
+3. **Answer with numbers, not adjectives.** "39 nets scanned (== board count),
+   0 single-pin" beats "the check passed".
+4. **Separate the three possible culprits** when something fails: the
+   function, the self-test assertion, or the board itself. All three have been
+   the real cause here, in roughly equal measure (§8).
+5. **Two misses, then instrument.** If a fix has failed twice, stop guessing.
+   Make the code report what it actually saw and ask for another run.
+6. **Never touch the user's real board files on disk,** and never save a
+   document you modified. Work on scratch copies.
 
-| Path | What it is |
+---
+
+## 1. Facts
+
+| | |
 | --- | --- |
-| `PluginFactory.cs`, `SpikeModule.cs` | Altium entry points. Touch with care — see the API notes. |
-| `SpikeWindow.cs` | The whole UI, built in code, no XAML. Sections table near the top. |
-| `*.cs` (Geometry, Cleanup, Placement, …) | One file per group of functions. Each returns a `Result` with counts, notes and errors rather than throwing at the UI. |
-| `Ipc2221.cs`, `FilletGeometry.cs`, `FenceGeometry.cs`, `ReleaseBundle.cs`, `PolyGeometry.cs` | **Altium-free.** No `PCB`/`DXP`/WPF types. This is what makes them testable. |
-| `SelfTest.cs` | Runs every function against the open board and writes `spike_selftest.md`. |
-| `tests/` | Console harnesses that compile the Altium-free files *directly from source*. |
-| `docs/` | Screenshots. |
+| Host | Altium Designer 26.x on Windows, .NET 8 + WPF in-process |
+| Target | `net8.0-windows`, `UseWPF`, x64 |
+| SDK refs | `Assemblies/Altium.SDK.dll`, `Assemblies/Altium.SDK.Interfaces.dll` — copied from the user's own install, **never committed** |
+| Install folder | `C:\Program Files\Altium\AD<nn>` — `<nn>` is the version first installed, so Altium 26 may live in `AD22` |
+| Deploy folder | `C:\ProgramData\Altium\Altium Designer {GUID}\Extensions\AltiumSpike\` |
+| Locale trap | Developer machines may be non-English. **All** number formatting uses `CultureInfo.InvariantCulture` |
+| Coordinates | Internal units; convert with `EDP.Utils.CoordToMMs` / `MMsToCoord` |
 
-## Build, test, deploy
+---
 
+## 2. Commands (all verified)
+
+```powershell
+# build the plugin (from the repo root)
+dotnet build -c Debug
+
+# run every pure-logic harness; each exits 0 only if all assertions pass
+foreach ($t in Get-ChildItem tests -Directory) { dotnet run --project $t.FullName }
+
+# look up an SDK type before writing code against it (§4)
+cd tools/SdkDump
+dotnet run -- ../../Assemblies/Altium.SDK.Interfaces.dll "IPCB_Polygon(Helper)?$" members
+
+# deploy: close Altium first -- it holds the DLL open while running
+./Deploy.ps1
 ```
-dotnet build -c Debug                       # from the repo root
-cd tests/PolyGeometryTests && dotnet run    # and the other three; exit 0 == all pass
-```
 
-Deploy by copying `AltiumSpike.dll` (and `.pdb`) to:
+The extension is loaded at Altium startup. **A new DLL needs an Altium
+restart**; reopening the window is not enough. If a self-test report looks
+unchanged after a fix, check its timestamp and the section list first — the
+old DLL is the most common explanation.
 
-```
-C:\ProgramData\Altium\Altium Designer {GUID}\Extensions\AltiumSpike\
-```
+---
 
-`Deploy.ps1` does this and registers the extension. **Altium holds the DLL
-open while it runs** — close it first, or the copy is refused. The extension is
-loaded at startup, so a new DLL needs an Altium restart, not just a new window.
+## 3. Layout
 
-## The four rules that matter
+| Path | Role |
+| --- | --- |
+| `PluginFactory.cs` | Entry point. The class **must** be `CSharpPlugin.PluginFactory` exactly, and `InvokePluginFactory(IClient)` must be an instance method. Otherwise Altium loads nothing and reports nothing. |
+| `SpikeModule.cs` | `ServerModule`; registers commands in `InitializeCommands()`. |
+| `SpikeWindow.cs` | The whole UI, in code (no XAML). `Sections()` near the top is the sidebar table. |
+| `<Area>.cs` | One file per group of functions (`Cleanup`, `Placement`, `Polygons`, `Connectivity`, …). Static methods returning a `Result`. |
+| `PcbDraw.cs` | Shared primitives: `Layer`, `Line`, `Text`, `ClearArea`. Use these rather than calling the object factory directly. |
+| `Ipc2221.cs`, `FilletGeometry.cs`, `FenceGeometry.cs`, `PolyGeometry.cs`, `ReleaseBundle.cs` | **Altium-free.** No `PCB`, `DXP`, `EDP` or WPF types. Compiled directly by `tests/`. |
+| `SelfTest.cs` | Runs every function against the open board; writes `spike_selftest.md`. |
+| `tests/<Name>Tests/` | Console harnesses. Each `.csproj` includes the shipping source file by relative path — **never a copy**. |
+| `tools/SdkDump/` | Metadata dumper for the SDK assemblies. |
 
-**1. Read the API from assembly metadata before writing a call.**
-There is no usable documentation for the C# SDK, and it is not a rename of the
-DelphiScript one. Guessing a member name produces code that compiles against
-`dynamic`-ish surfaces and fails silently at runtime. Dump the real signatures
-from `Altium.SDK.Interfaces.dll` and work from those.
+`tests/` and `tools/` are excluded from the plugin build in the root `.csproj`.
+Do not remove that exclusion: without it the plugin compiles the harnesses in,
+and fails with duplicate assembly attributes once any harness has been run.
 
-**2. Pure logic goes in an Altium-free file with a test harness.**
-Anything that is arithmetic rather than API calls — fillet tangents, fence
-spacing, IPC-2221, point-in-polygon, archive naming — belongs in a file with no
-Altium types, compiled *directly from source* by a harness in `tests/`. Never a
-copy: a copied file drifts from what ships and the tests start passing against
-code nobody runs. This has caught real bugs that looked fine on screen:
-a via fence 10% too open on a curve, row clustering that split parts 20 µm
-apart, a path sanitiser that passed on Linux and would have written `C:` into a
-filename on Windows.
+---
 
-**3. A check is not a pass because it did not throw.**
-The failure mode worth catching is a function that returns cleanly having done
-nothing. Every self-test check states what it expected and compares against
-something real: a count that must equal another count, a coordinate that must
-land where it was asked to, a file read back from disk. `SelfTest.cs` says this
-at the top and the report says it at the bottom, because it is the whole point.
+## 4. The SDK — confirm, then write
 
-**4. When a fix misses twice, instrument — do not guess a third time.**
-Two wrong guesses in a row mean the mental model is wrong, and a third guess
-usually confirms it rather than fixing it. Make the run report the measurement
-instead: what the layer name actually resolved to, whether any object was
-created at all, what the declared count was and what exception was swallowed.
-Several bugs here were only found because two checks in the same report
-contradicted each other.
+There is no usable documentation for the C# SDK and it is **not** a rename of
+the DelphiScript API. Before writing any call:
 
-A corollary: **the self-test's own assertions have been wrong about as often as
-the code.** When a check fails, establish whether the function or the assertion
-is at fault before changing either. Assertions that have been wrong here
-compared text counts before and after an operation that deletes first, searched
-whole CSV lines for a word that turned out to be a layer *name*, and demanded
-that a copper scan see every track on a board whose tracks are silkscreen.
+1. Dump the interface **and its helper** with `tools/SdkDump` (§2) — use a
+   regex like `"IPCB_Polygon(Helper)?$"`.
+2. Many useful calls are not on the interface at all. They are extension-style
+   wrappers on a class named **`<Interface>Helper` in the same assembly**
+   (`IPCB_PolygonHelper.GetState_Segments`, `IPCB_LayerUtilsHelper.FromString`
+   / `MechanicalLayer`). The interface carries an `Internal_` twin instead,
+   which returns a different and usually less useful type. Prefer the helper.
+3. Copy the exact name and signature, including the return type.
 
-## Safety
+### Traps — each returns a plausible wrong answer without throwing
 
-- **Never commit the Altium SDK DLLs.** `.gitignore` excludes `Assemblies/`,
-  `bin/`, `obj/` and `*.dll`. They are proprietary and this repo is public.
-- **The full self-test modifies the open board.** It builds scratch geometry
-  well clear of the outline, verifies it, removes it again, and restores
-  anything it touched on the real board. Nothing is written to disk, so an
-  unsaved document is the backstop — but do not rely on that. Prefer a scratch
-  copy, and prefer the read-only half when you only need the reports.
-- Functions that change the board are marked `MODIFIES BOARD` on their card and
-  say so in the results panel. Keep that up.
-- Renumbering designators desynchronises the PCB from the schematic. It writes a
-  proposal CSV first and changes nothing until asked twice.
+| Trap | What the wrong answer looks like | Do this |
+| --- | --- | --- |
+| `GetState_Moveable()` is **inverted** | Locking unlocks | `false` means locked, on components *and* primitives |
+| `FromString("Mechanical 1")` | Returns a non-null layer; objects drawn there can't be found | `LayerUtils.MechanicalLayer((uint)n)` — see `PcbDraw.Layer` |
+| `AsString` renders `"Mechanical Layer 15"` | Name matching misses | Don't round-trip layer names through strings |
+| Every physical layer casts to `IPCB_ElectricalLayer` | Paste/overlay/core typed as copper; 1.6 mm board reads 0.07 mm | Test membership of `eLayerClass_Electrical`, not the cast |
+| Is this primitive on copper? | Name matching excluded every track, admitted every pad | `LayerUtils.IsElectricalLayer(p.GetState_V7Layer())`; admit pads and vias by kind (they report Multi-Layer) |
+| A track is not necessarily copper | 408 of 416 "tracks" were silkscreen outlines | Filter by layer **before** counting or classifying |
+| `IPCB_Polygon.GetState_AreaSize()` | `0.00` on a poured polygon | Shoelace over the outline (`PolyGeometry.PolygonArea`) |
+| `Internal_GetState_Segments(i)` | Empty `IPolySegment` | `GetState_Segments(i)` → `PolySegment` struct |
+| `GetState_IslandAreaThreshold()` | `250000000000` for 1.6 mm² | Square coords: multiply by `CoordToMMs(1)²` |
+| Free text via `PCBObjectFactory` | Object added, nothing drawn, not findable by string | Set **both** `SetState_UnderlyingString` and `SetState_Text` (`PcbDraw.Text` does) |
+| Pad mask/paste expansion | Value reverts next time rules run | Set the matching `…Valid = TCacheState.eCacheManual` in `V7_PadCache` |
+| `RoutedLength64` / `SignalLength` | `0` for every net with connectivity not built; `SignalLength` non-zero on some | Measure geometry (`Connectivity.MeasureNets`) and report both |
+| Fill location | Off by half a fill | `LocationX/Y` is the **lower-left corner**; `Length` = X extent, `Width` = Y extent |
+| Component body vs anchor | Pick-and-place off by ~0.18 mm | Use `BoundingRectangleNoNameComment()` for the body; the anchor is not the centre |
+| `Math.Round` | `33.416` where Altium prints `33.417` | `MidpointRounding.AwayFromZero`; also normalise `-0.000` to `0.000` |
+| `SetState_Rotation` | — | Absolute, not relative |
 
-## Verifying a change
+Add to this table whenever a new one is found. It is the most valuable part of
+this file.
 
-1. `dotnet build` clean, and all four test harnesses at 0 failures.
-2. Deploy, restart Altium, run **Reports → Run full self-test** on a scratch
-   board, and read `spike_selftest.md`.
-3. Compare against the previous run. A check that changed verdict is either the
-   fix working or a second bug; the report gives the numbers to tell which.
+---
 
-An unrouted board cannot exercise the routing-dependent half — current capacity,
-dangling copper, return vias, measured net lengths, testpoint assignment all
-have nothing to bite on and will *correctly* report zero. Use a routed board
-when touching any of those.
+## 5. Recipes
 
-## Further reading
+### Add a new function
 
-Two sets of SDK notes are kept outside this repo, in the project knowledge base:
+1. **Confirm every SDK member** you need with `tools/SdkDump`.
+2. **Split pure logic out.** Anything that is arithmetic — geometry, formulae,
+   naming, sorting rules — goes in an Altium-free file (or an existing one like
+   `PolyGeometry.cs`) with assertions in `tests/`. Write the test cases that
+   break a naive implementation: boundaries, wrap-around, empty input, both
+   winding orders.
+3. **Write the board-facing part** in the matching `<Area>.cs`, following the
+   existing shape:
+   - `public static Result Name(IPCB_ServerInterface s, IPCB_Board b, …)`
+   - Board iterators: create, `AddFilter_ObjectSet`, `AddFilter_AllLayers()`,
+     `AddFilter_Method(eProcessAll)`, and **`BoardIterator_Destroy` in `finally`**.
+   - Board changes inside `pcbServer.PreProcess()` / `PostProcess()`, and each
+     object inside `BeginModify()` / `EndModify()` with `EndModify` in `finally`
+     — a component left mid-modify blocks File › Save with no useful message.
+   - Collect errors into `Result.Errors`; never throw at the UI.
+   - Write CSVs with `new UTF8Encoding(false)` and invariant formatting.
+4. **Add the UI card** in `SpikeWindow.cs`: a `ToolCard(...)` in the right
+   `Build…Section`, a `Do…` handler that validates input with `TryMM` /
+   `Complain`, persists fields with `Settings.SetValue`, and reports through
+   `ShowResult` + `SetStatus`. Mark anything that changes the board
+   **`MODIFIES BOARD`** on its card.
+5. **Add a self-test check** (§6). A function without one is unverified.
+6. Build, run the harnesses, deploy, run the self-test, read the report.
 
-- **API notes** — how to get an extension to load at all, the deployment layout,
-  the DelphiScript→C# mapping, fill geometry, number formatting and the JLCPCB
-  specifics.
-- **PCB object model traps** — the accessors that return a plausible wrong
-  answer without throwing: inverted `Moveable`, mechanical layer names that do
-  not round-trip through `AsString`/`FromString`, every physical layer casting
-  successfully to `IPCB_ElectricalLayer`, `GetState_AreaSize` returning zero on
-  a poured polygon, island thresholds in square coords, and free text that needs
-  its underlying string set before it will draw.
+### Fix a self-test failure
+
+1. Read the whole report, not just the failure. Look for **two checks that
+   contradict each other** — that is usually the real clue.
+2. Decide which is wrong: the function, the assertion, or your assumption about
+   the board. Check the board census section before anything else.
+3. If you can't tell, instrument: make the check print what it measured.
+4. Fix one thing, redeploy, re-run. Compare verdicts with the previous report.
+
+---
+
+## 6. Self-test rules
+
+- **A check is not a pass because it did not throw.** Every check compares its
+  result against something independent: a count that must equal another count,
+  a coordinate that must land where requested, a file read back from disk.
+- Return `"PASS: …"`, `"FAIL: …"`, `"INFO: …"` or `"SKIP: …"` with the numbers
+  in the message.
+- A `FAIL` message must say what was expected, what was found, and — where
+  known — the likely cause.
+- **Read-only checks** must not change the board. Assert that (e.g. track count
+  before == after).
+- **Modifying checks** build their own geometry in the scratch area (`ox, oy`,
+  well clear of the outline), verify it, and leave nothing behind: the final
+  sweep removes the scratch area, and any check that touches an existing object
+  records its state first and restores it in `finally`.
+- A zero is only a pass if the board makes zero correct. Check the census:
+  **an unrouted board makes every routing-dependent result zero legitimately**,
+  and a check that fails on that is a broken assertion.
+
+Assertions here have been wrong as often as code. Known bad patterns:
+comparing counts across an operation that deletes before it adds; searching a
+whole CSV line for a word that can also be a layer *name*; assuming every track
+is copper.
+
+---
+
+## 7. Definition of done
+
+- [ ] `dotnet build` clean, no new warnings
+- [ ] Every harness in `tests/` exits 0
+- [ ] New pure logic has harness coverage, including edge cases
+- [ ] New board function has a self-test check that compares, not just runs
+- [ ] Deployed, Altium restarted, self-test run on a scratch board
+- [ ] Report read; any verdict change explained
+- [ ] New SDK trap, if found, added to the table in §4
+
+If the last three can't be done (no Altium access, say), stop at "compiles and
+harnesses pass" and **say so explicitly** in your answer.
+
+---
+
+## 8. Answering questions about the board
+
+When the user asks why a report says something, check in this order:
+
+1. **Is the board what you think it is?** Census counts, per-layer primitives,
+   whether it is routed at all. Two runs on the "same" file can differ if one
+   was against an unsaved in-memory state.
+2. **Is the assertion right?**
+3. **Is the function right?**
+
+Say which of the three it was. If it is the board, say that plainly — it is a
+finding, not an excuse.
+
+---
+
+## 9. Safety
+
+- **Never commit** anything from `Assemblies/`, `bin/`, `obj/`, or any `.dll`.
+  The SDK is proprietary and this repo is public.
+- **Never save** a PCB document the plugin has modified. Nothing here writes
+  the document to disk; keep it that way.
+- Board-modifying functions are opt-in, clearly labelled, and report exactly
+  what they changed.
+- Renumbering designators desynchronises the PCB from the schematic. It writes
+  a proposal first and applies only when asked again.
+
+---
+
+## 10. Commits
+
+- Messages explain **why**, including what was found and how it was verified.
+- Commits carry only the author's name. **Do not add `Co-Authored-By`, session
+  links, "generated with" lines or any other tool attribution** to commit
+  messages, PR descriptions, code comments or files.
+- Strip embedded provenance metadata (e.g. C2PA chunks in PNGs) from any
+  generated image before committing it.

@@ -9,6 +9,12 @@
     <AssemblyName>AltiumSpike</AssemblyName>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
+
+    <!-- tests/ and tools/ are separate projects. Without this the root project
+         globs their sources (and, once a harness has been run, their
+         obj/*.AssemblyInfo.cs) into the plugin, which then fails to build with
+         duplicate assembly attributes. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**;tools/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <!--
