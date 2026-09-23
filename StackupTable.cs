@@ -61,6 +61,7 @@ namespace AltiumSpike
             public int Rows;
             public int PrimitivesDrawn;
             public int PrimitivesRemoved;
+            public string LayerUsed = "";
             public double BoardThicknessMM;
             public double WidthMM;
             public double HeightMM;
@@ -221,6 +222,12 @@ namespace AltiumSpike
                 res.Errors.Add("Layer \"" + opt.LayerName + "\" does not exist on this board.");
                 return res;
             }
+
+            // What the layer ACTUALLY resolved to. Asking for "Mechanical 1"
+            // and silently getting something else is how a table gets drawn
+            // where nobody looks for it.
+            try { res.LayerUsed = pcbServer.LayerUtils().AsString(layer); } catch { }
+            Log.Write("StackupTable: \"" + opt.LayerName + "\" resolved to \"" + res.LayerUsed + "\"");
 
             List<Row> rows = ReadStack(board, opt, res);
             if (rows.Count == 0)

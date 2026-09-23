@@ -40,19 +40,58 @@ namespace AltiumSpike
 
         // Returns null when the name does not resolve, so callers can report
         // "no such layer" rather than silently drawing onto Top Layer.
+        // MECHANICAL LAYERS ARE ASKED FOR BY NUMBER, NOT BY NAME.
+        //
+        // AsString renders them "Mechanical Layer 15", so FromString("Mechanical 1")
+        // -- the spelling every caller here used, and the one Altium's own UI
+        // shows -- does not round-trip. The generators drew their tables onto
+        // whatever that produced and nothing was ever found on the board
+        // afterwards. LayerUtils.MechanicalLayer(n) takes the number and
+        // removes the guess entirely.
         public static IV7_Layer Layer(IPCB_ServerInterface pcbServer, string layerName)
         {
+            string name = (layerName ?? "").Trim();
             try
             {
                 IPCB_LayerUtils lu = pcbServer.LayerUtils();
-                return lu.FromString((layerName ?? "").Trim());
+
+                int n = MechanicalNumber(name);
+                if (n >= 1 && n <= 32)
+                {
+                    IV7_Layer ml = lu.MechanicalLayer((uint)n);
+                    if (ml != null) return ml;
+                }
+
+                IV7_Layer v = lu.FromString(name);
+                if (v == null)
+                    Log.Write("PcbDraw.Layer(\"" + name + "\") resolved to nothing");
+                return v;
             }
             catch (Exception ex)
             {
-                Log.Write("PcbDraw.Layer(\"" + layerName + "\") failed -- " +
+                Log.Write("PcbDraw.Layer(\"" + name + "\") failed -- " +
                           ex.GetType().Name + ": " + ex.Message);
                 return null;
             }
+        }
+
+        // "Mechanical 1", "Mechanical Layer 1", "mechanical  7" -> the number.
+        // Anything else -> -1.
+        public static int MechanicalNumber(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return -1;
+            string s = name.Trim();
+            if (!s.StartsWith("Mechanical", StringComparison.OrdinalIgnoreCase)) return -1;
+
+            s = s.Substring("Mechanical".Length).Trim();
+            if (s.StartsWith("Layer", StringComparison.OrdinalIgnoreCase))
+                s = s.Substring("Layer".Length).Trim();
+
+            int n;
+            if (int.TryParse(s, System.Globalization.NumberStyles.Integer,
+                             System.Globalization.CultureInfo.InvariantCulture, out n))
+                return n;
+            return -1;
         }
 
         public static IPCB_Track Line(IPCB_ServerInterface pcbServer, IPCB_Board board, IV7_Layer layer,

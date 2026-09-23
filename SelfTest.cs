@@ -1097,7 +1097,8 @@ namespace AltiumSpike
                 if (x.Rows == 0)
                     return "FAIL: no rows drawn -- " + string.Join("; ", x.Errors.ToArray());
 
-                string diag = "text objects " + textBefore + " -> " + textAfter +
+                string diag = "asked for \"" + o.LayerName + "\", got \"" + x.LayerUsed + "\"; " +
+                              "text objects " + textBefore + " -> " + textAfter +
                               " (" + (textAfter - textBefore) + " added), " +
                               x.PrimitivesDrawn + " primitives claimed, " +
                               x.PrimitivesRemoved + " cleared first";
