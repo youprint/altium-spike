@@ -186,6 +186,29 @@ namespace SchPlacementTest
             }
 
             // ---------------------------------------------------------------
+            Section("Designators already in use (unique per project, not per sheet)");
+            {
+                SchPlacementPlan.Plan p = SchPlacementPlan.Parse(
+                    Rows("Designator,LCSC", "D1,C1", "C1,C1", "U1,C1", "R9,C1"), null);
+                HashSet<string> here = new HashSet<string> { "d1" };                       // case differs, ordinal set
+                Dictionary<string, string> elsewhere = new Dictionary<string, string>
+                    { { "D1", "Other.SchDoc" }, { "c1", "Daughterboard.SchDoc" }, { "U1", "Daughterboard.SchDoc" } };
+                HashSet<string> skip = SchPlacementPlan.ClassifyExisting(p, here, elsewhere);
+                Ok(skip.Count == 1 && skip.Contains("D1"), "on this sheet -> skipped (a re-run), case-insensitively");
+                Ok(!p.Ok && Has(p.Errors, "2 designator(s) are already used on other sheets"),
+                   "on another sheet -> one error counting the collisions");
+                Ok(Has(p.Errors, "C1 (Daughterboard.SchDoc)") && Has(p.Errors, "U1 (Daughterboard.SchDoc)"),
+                   "each collision names its sheet");
+                Ok(!Has(p.Errors, "D1 (Other"), "this sheet wins over elsewhere: D1 is a re-run, not a collision");
+                Ok(!Has(p.Errors, "R9"), "an unused designator is neither");
+            }
+            {
+                SchPlacementPlan.Plan p = SchPlacementPlan.Parse(Rows("Designator,LCSC", "R1,C1"), null);
+                HashSet<string> skip = SchPlacementPlan.ClassifyExisting(p, null, null);
+                Ok(p.Ok && skip.Count == 0, "no sheet data -> nothing skipped, no error");
+            }
+
+            // ---------------------------------------------------------------
             Section("Automatic layout");
             {
                 SchPlacementPlan.Plan p = SchPlacementPlan.Parse(

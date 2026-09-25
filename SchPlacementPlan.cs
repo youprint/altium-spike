@@ -408,6 +408,54 @@ namespace AltiumSpike
         }
 
         // ==================================================================
+        // Designators already in use
+        // ==================================================================
+
+        // Designators are unique per project. On THIS sheet a designator
+        // already present is a re-run: that part is left alone (returned in
+        // the skip set) and its connections are skipped. On ANOTHER sheet of
+        // the project it is a collision -- placing it would give the project
+        // two of them -- so it is an error, and the caller places nothing.
+        public static HashSet<string> ClassifyExisting(Plan p, HashSet<string> onThisSheet,
+                                                       Dictionary<string, string> elsewhere)
+        {
+            HashSet<string> skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            List<string> clashes = new List<string>();
+            foreach (Part part in p.Parts)
+            {
+                if (onThisSheet != null && Contains(onThisSheet, part.Designator))
+                {
+                    skip.Add(part.Designator);
+                    continue;
+                }
+                string sheet;
+                if (elsewhere != null && TryGet(elsewhere, part.Designator, out sheet))
+                    clashes.Add(part.Designator + " (" + sheet + ")");
+            }
+            if (clashes.Count > 0)
+                p.Errors.Add(clashes.Count + " designator(s) are already used on other sheets of this project -- " +
+                             "placing them would duplicate them. Rename them in the components CSV: " +
+                             string.Join(", ", clashes));
+            return skip;
+        }
+
+        // Case-insensitive whatever comparer the caller's collection was built with.
+        private static bool Contains(HashSet<string> set, string key)
+        {
+            foreach (string s in set)
+                if (string.Equals(s, key, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static bool TryGet(Dictionary<string, string> map, string key, out string value)
+        {
+            foreach (KeyValuePair<string, string> kv in map)
+                if (string.Equals(kv.Key, key, StringComparison.OrdinalIgnoreCase)) { value = kv.Value; return true; }
+            value = null;
+            return false;
+        }
+
+        // ==================================================================
         // Automatic layout for rows with no position
         // ==================================================================
 

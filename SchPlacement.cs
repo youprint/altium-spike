@@ -152,6 +152,28 @@ namespace AltiumSpike
             if (plan.Ok && server != null)
                 Resolve(server, plan, o, libraryOf, res);
 
+            // ---- designators already in use ----------------------------
+            //
+            // Designators are unique per PROJECT, not per sheet. The first
+            // version looked only at the focused sheet and placed D1, C1, U1,
+            // C2 and R1 onto a sheet whose project already had all five on
+            // another sheet -- five "Duplicate Component Designators" errors at
+            // compile. Same sheet = a re-run, left alone; another sheet = a
+            // collision, and nothing is placed.
+            HashSet<string> skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (plan.Ok && doc != null)
+            {
+                HashSet<string> onThisSheet = new HashSet<string>(ComponentsByDesignator(doc).Keys, StringComparer.OrdinalIgnoreCase);
+                int sheets;
+                List<string> unread;
+                Dictionary<string, string> elsewhere = ProjectDesignators(client, server, doc, out sheets, out unread);
+                res.Notes.Add("Designators checked against this sheet and " + sheets + " other sheet(s) of the project (" +
+                              elsewhere.Count + " designator(s) in use there).");
+                foreach (string u in unread)
+                    res.Warnings.Add(u + " is in the project but could not be read, so its designators were not checked");
+                skip = SchPlacementPlan.ClassifyExisting(plan, onThisSheet, elsewhere);
+            }
+
             if (!plan.Ok)
             {
                 res.Refused = true;
@@ -160,17 +182,9 @@ namespace AltiumSpike
                 return res;
             }
 
-            // ---- already on the sheet? ---------------------------------
-            Dictionary<string, ISch_Component> existing = ComponentsByDesignator(doc);
-            HashSet<string> skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (SchPlacementPlan.Part p in plan.Parts)
-            {
-                if (!existing.ContainsKey(p.Designator)) continue;
-                skip.Add(p.Designator);
-                res.PartsSkipped++;
-            }
+            res.PartsSkipped = skip.Count;
             if (skip.Count > 0)
-                res.Warnings.Add(skip.Count + " designator(s) are already on the sheet and were left alone: " +
+                res.Warnings.Add(skip.Count + " designator(s) are already on this sheet and were left alone: " +
                                  Sample(skip, 10));
 
             List<string[]> partRows = new List<string[]>();
@@ -789,6 +803,78 @@ namespace AltiumSpike
             }
             finally { doc.SchIterator_Destroy(ref it); }
             return ids;
+        }
+
+        // Designator -> sheet file name, for every OTHER .SchDoc in the
+        // project that owns the focused document. A sheet that is not loaded
+        // is opened hidden (read only -- nothing is changed or saved); one
+        // that still cannot be read is returned in `unread` so the caller
+        // says so rather than silently checking less.
+        public static Dictionary<string, string> ProjectDesignators(IClient client, ISch_ServerInterface server,
+                                                                    ISch_Document current, out int sheets,
+                                                                    out List<string> unread)
+        {
+            Dictionary<string, string> map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            sheets = 0;
+            unread = new List<string>();
+
+            IDXPProject project = null;
+            try
+            {
+                IDXPWorkSpace ws = client.GetDXPWorkspace();
+                if (ws != null)
+                {
+                    IDXPDocument focused = ws.DM_FocusedDocument();
+                    if (focused != null) project = focused.DM_Project();
+                    if (project == null) project = ws.DM_FocusedProject();
+                }
+            }
+            catch (Exception ex) { Log.Exception("SchPlacement.ProjectDesignators/workspace", ex); }
+            if (project == null) return map;
+
+            string currentPath = "";
+            try { currentPath = current.GetState_DocumentName() ?? ""; } catch { }
+
+            int n = 0;
+            try { n = project.DM_LogicalDocumentCount(); } catch { }
+            for (int i = 0; i < n; i++)
+            {
+                string path = "";
+                try
+                {
+                    IDXPDocument d = project.DM_LogicalDocuments(i);
+                    if (d != null) path = d.DM_FullPath() ?? "";
+                }
+                catch { }
+                if (!path.EndsWith(".SchDoc", StringComparison.OrdinalIgnoreCase)) continue;
+                if (SamePath(path, currentPath)) continue;
+
+                ISch_Document sd = null;
+                try { sd = server.GetSchDocumentByPath(path); } catch { }
+                if (sd == null)
+                {
+                    try { client.OpenDocumentShowOrHide("SCH", path, false); } catch { }
+                    try { sd = server.GetSchDocumentByPath(path); } catch { }
+                }
+                if (sd == null) { unread.Add(Path.GetFileName(path)); continue; }
+
+                sheets++;
+                foreach (string des in ComponentsByDesignator(sd).Keys)
+                    if (!map.ContainsKey(des)) map[des] = Path.GetFileName(path);
+            }
+            return map;
+        }
+
+        private static bool SamePath(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+            try
+            {
+                if (Path.IsPathRooted(a) && Path.IsPathRooted(b))
+                    return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
+            }
+            catch { }
+            return string.Equals(Path.GetFileName(a), Path.GetFileName(b), StringComparison.OrdinalIgnoreCase);
         }
 
         public static Dictionary<string, ISch_Component> ComponentsByDesignator(ISch_Document doc)

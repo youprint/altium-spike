@@ -65,6 +65,39 @@ namespace AltiumSpike
 
             if (doc != null)
             {
+                r.Run("Project designator scan", "every other sheet of the project is read or named as unread", delegate
+                {
+                    int sheets;
+                    List<string> unread;
+                    Dictionary<string, string> used = SchPlacement.ProjectDesignators(client, server, doc, out sheets, out unread);
+
+                    // Independent count: the project's own document list.
+                    int expected = 0;
+                    try
+                    {
+                        IDXPWorkSpace ws = client.GetDXPWorkspace();
+                        IDXPDocument focused = ws == null ? null : ws.DM_FocusedDocument();
+                        IDXPProject prj = focused == null ? null : focused.DM_Project();
+                        if (prj == null && ws != null) prj = ws.DM_FocusedProject();
+                        if (prj == null) return "SKIP: the focused sheet belongs to no project";
+                        for (int i = 0; i < prj.DM_LogicalDocumentCount(); i++)
+                        {
+                            IDXPDocument d = prj.DM_LogicalDocuments(i);
+                            string p = d == null ? "" : (d.DM_FullPath() ?? "");
+                            if (p.EndsWith(".SchDoc", StringComparison.OrdinalIgnoreCase)) expected++;
+                        }
+                    }
+                    catch (Exception ex) { return "FAIL: could not list the project's documents -- " + ex.Message; }
+
+                    int others = expected - 1;
+                    if (sheets + unread.Count != others)
+                        return "FAIL: the project has " + expected + " schematic sheet(s), so " + others + " other(s), but " +
+                               sheets + " were read and " + unread.Count + " reported unread";
+                    string tail = unread.Count > 0 ? "; UNREAD: " + string.Join(", ", unread.ToArray()) : "";
+                    return (unread.Count > 0 ? "INFO: " : "PASS: ") + sheets + " of " + others + " other sheet(s) read, " +
+                           used.Count + " designator(s) in use there" + tail;
+                });
+
                 r.Run("Symbol library", "the library lists its symbols without being opened", delegate
                 {
                     string why;
