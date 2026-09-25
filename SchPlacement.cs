@@ -42,11 +42,15 @@
 //   - Wire vertices and label anchors read back where they were put, for
 //     left- and down-pointing pins (the right-aligned label cases).
 //
+//   - Connectivity as Altium's compiler sees it (sample LDO circuit, Daughterboard
+//     project): compiling reported "Net VIN_RAW has only one pin (Pin D1-2)" --
+//     the compiler traced that label through its stub to the diode's anode --
+//     and, once designators were checked project-wide, no other error. 5/5
+//     placed, 11/11 labelled.
+//
 // STILL UNVERIFIED:
-//   - Connectivity as Altium's compiler sees it. The anchors are on the wires
-//     and the wires start on the tips, but no check compiles the project; the
-//     Navigator after a real placement is the proof.
-//   - Mirror, multi-pin ICs, multi-part symbols.
+//   - Per-net pin counts in the Navigator (only the single-pin net was read).
+//   - Mirror, ICs with many pins, multi-part symbols.
 //   - Undo: the robot messages pass null as the broadcast target (the SDK
 //     types the slot as ISch_BasicContainer and exposes no broadcast object).
 //     The change itself does not depend on them.
