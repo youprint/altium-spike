@@ -196,6 +196,7 @@ namespace AltiumSpike
             Connectivity.CacheCopperLayers(pcbServer, board);
 
             int unnetted = 0;
+            int unnettedSegs = -1;
             int copperSegs = 0;
             r.Run("Unnetted copper", "every copper primitive is accounted for as netted or not", delegate
             {
@@ -216,6 +217,7 @@ namespace AltiumSpike
                            pads + " pads, and a pad is copper whatever layer it sits on";
 
                 unnetted = x.Found;
+                unnettedSegs = x.Tracks + x.Arcs;
 
                 int rows = File.ReadAllLines(x.CsvPath).Length - 1;
                 if (rows != x.Found)
@@ -276,14 +278,35 @@ namespace AltiumSpike
                 if (x.Found != nets)
                     return "FAIL: measured " + x.Found + " nets but the board has " + nets;
 
-                // The scan must see every netted track. Tracks that are
-                // unnetted are counted by the check above, so the two together
-                // have to account for all of them.
-                if (x.Scanned == 0)
-                    return "PASS: no netted copper to measure, consistent with " + unnetted +
-                           " unnetted copper primitive(s) — see whether this board is routed at all";
+                // EVERY TRACK AND ARC ON A COPPER LAYER IS EITHER MEASURED HERE
+                // OR LISTED AS UNNETTED ABOVE. The first assertion compared
+                // against the raw track count, which includes silkscreen; the
+                // next version dropped it, and a zero then passed without being
+                // compared to anything -- it would have passed on a routed board
+                // with a broken scan. The routed check above counts copper
+                // segments with the same IsElectricalLayer test, so the three
+                // numbers must add up exactly.
+                if (unnettedSegs < 0)
+                {
+                    if (x.Scanned > copperSegs)
+                        return "FAIL: measured " + x.Scanned + " netted segment(s) but only " + copperSegs +
+                               " track(s)/arc(s) sit on copper layers -- something off copper was measured";
+                    return "INFO: measured " + x.Scanned + " of " + copperSegs + " copper track(s)/arc(s); " +
+                           "the unnetted count is missing because the unnetted-copper check failed, so the " +
+                           "remainder cannot be accounted for";
+                }
 
-                return "PASS: " + x.Scanned + " netted copper segment(s) measured across " + x.Found + " net(s)";
+                if (x.Scanned + unnettedSegs != copperSegs)
+                    return "FAIL: " + x.Scanned + " netted + " + unnettedSegs + " unnetted track(s)/arc(s) != " +
+                           copperSegs + " on copper layers -- the length scan and the copper count disagree " +
+                           "about which segments are copper";
+
+                if (copperSegs == 0)
+                    return "PASS: nothing to measure, and correctly so: 0 netted + 0 unnetted == 0 track(s)/arc(s) " +
+                           "on copper layers";
+
+                return "PASS: " + x.Scanned + " netted copper segment(s) measured across " + x.Found + " net(s); " +
+                       x.Scanned + " + " + unnettedSegs + " unnetted == " + copperSegs + " on copper layers";
             });
 
             // --- Import / Export ---
