@@ -331,6 +331,11 @@ namespace AltiumSpike
             if (res.PartsCorrected > 0)
                 res.Notes.Add(res.PartsCorrected + " needed their location or orientation set after placement -- " +
                               "the placement call did not honour them.");
+            // Reported even when zero: that is the answer to whether the
+            // placement call leaves parts selected at all.
+            res.Notes.Add(ctx.Deselected + " placed part(s) were still selected after placement and were deselected.");
+            Log.Write("SchPlacement: placed " + res.PartsPlaced + ", corrected " + res.PartsCorrected +
+                      ", deselected " + ctx.Deselected + ", labelled " + res.Labelled + ", label failures " + res.LabelsFailed);
             res.Notes.Add(res.Labelled + " pin connection(s) labelled across " + res.Nets + " net(s)" +
                           (res.LabelsFailed > 0 ? ", " + res.LabelsFailed + " FAILED" : "") + ".");
             res.Notes.Add("The sheet is modified in memory only. Review it, then save it yourself.");
@@ -643,6 +648,17 @@ namespace AltiumSpike
             {
                 ctx.EndModify(c);
             }
+            // PlaceLibraryComponent appears to leave the part it just placed
+            // selected: after every run the LAST part (R204 in the test2
+            // circuit) showed selection handles. A stray selection is one
+            // Delete key away from losing a part, so clear it, and count it
+            // so the report says whether the diagnosis was right.
+            if (c.GetState_Selection())
+            {
+                c.SetState_Selection(false);
+                ctx.Deselected++;
+            }
+
             c.GraphicallyInvalidate();
             return corrected;
         }
@@ -757,6 +773,9 @@ namespace AltiumSpike
             private readonly IProcessControl pc;
             private readonly ISch_RobotManager robot;
             private bool open;
+
+            // Parts Finish found still selected after placement, and cleared.
+            public int Deselected;
 
             public Context(IClient client, ISch_ServerInterface server, ISch_Document doc)
             {
