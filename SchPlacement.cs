@@ -53,10 +53,13 @@
 //     predicted offline from the same CSVs; pins matched by number, by name
 //     and by Node; all four rotations; a 14-pin IC.
 //
+//   - Mirror at 0 degrees (21:42). SetState_IsMirrored(true) had set a flag
+//     and mirrored nothing; Mirror(location) flips pins and artwork -- the
+//     self-test's reflected-tips check passed and Q201 came out with its gate
+//     on the right, orientation and location undisturbed.
+//
 // STILL UNVERIFIED:
-//   - Mirror. SetState_IsMirrored(true) set a flag and mirrored nothing (Q201
-//     in that test); Finish now calls Mirror(location). The schematic
-//     self-test's "Mirror flips the part" check settles it.
+//   - Mirror combined with a rotation (every mirrored part so far was at 0).
 //   - Multi-part symbols (none exist in youeda.SchLib to test with).
 //   - Undo: the robot messages pass null as the broadcast target (the SDK
 //     types the slot as ISch_BasicContainer and exposes no broadcast object).
