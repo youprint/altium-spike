@@ -6,12 +6,18 @@ PL
 	Shortcut1=''
 	Shortcut2=''
 	Params=''
-	Description='Open the AltiumSpike window: export, import, JLCPCB and component lock'
+	Description='Open the AltiumSpike window: PCB tools, and component placement on schematics'
 End
 
-Insertion _User60 TargetID='MNPCB_Tools10' RefID0='PcbDoc_Tools' 
+Insertion _User60 TargetID='MNPCB_Tools10' RefID0='PcbDoc_Tools'
     Link _User61 PLID='AltiumSpike:ShowWindow'      End
 End
-Insertion _User62 TargetID='MNPCBMenu' InsertType='After' RefID0='MNPCB_Help10' 
+Insertion _User62 TargetID='MNPCBMenu' InsertType='After' RefID0='MNPCB_Help10'
     Link _User63 PLID='AltiumSpike:ShowWindow'      End
+End
+Insertion _User64 TargetID='MNSchematic_Tools10' RefID0='SchDoc_Tools'
+    Link _User65 PLID='AltiumSpike:ShowWindow'      End
+End
+Insertion _User66 TargetID='MNSchematicMenu' InsertType='After' RefID0='MNSchematic_Help10'
+    Link _User67 PLID='AltiumSpike:ShowWindow'      End
 End

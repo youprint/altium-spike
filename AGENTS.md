@@ -82,7 +82,7 @@ old DLL is the most common explanation.
 | Path | Role |
 | --- | --- |
 | `PluginFactory.cs` | Entry point. The class **must** be `CSharpPlugin.PluginFactory` exactly, and `InvokePluginFactory(IClient)` must be an instance method. Otherwise Altium loads nothing and reports nothing. |
-| `SpikeModule.cs` | `ServerModule`; registers commands in `InitializeCommands()`. A new command needs an entry in `AltiumSpike.Ins` **and** `AltiumSpike.rcs` as well. The window is the main entry point, so a new tool usually needs only a card. |
+| `SpikeModule.cs` | `ServerModule`; registers commands in `InitializeCommands()`. A new command needs an entry in `AltiumSpike.Ins` **and** `AltiumSpike.rcs` as well. The window is the main entry point, so a new tool usually needs only a card. **Menus are per editor:** each `.rcs` `Insertion` targets one editor's menu ID (`MNPCB_*`, `MNSchematic_*`, …) and the `.Ins` must list that editor's server under `Updates`. Take IDs from Altium's own `System\*.rcs`, never guess them. |
 | `SpikeWindow.cs` | The whole UI, in code (no XAML), ~200 KB -- search it, don't read it whole. `Sections()` near the top is the sidebar table; append new sections at the end so the remembered tab index of the others does not move. |
 | `<Area>.cs` | One file per group of functions (`Cleanup`, `Placement`, `Polygons`, `Connectivity`, …). Static methods returning a `Result`. |
 | `PcbDraw.cs` | Shared primitives: `Layer`, `Line`, `Text`, `ClearArea`. Use these rather than calling the object factory directly. |
