@@ -138,6 +138,7 @@ the DelphiScript API. Before writing any call:
 | Component body vs anchor | Pick-and-place off by ~0.18 mm | Use `BoundingRectangleNoNameComment()` for the body; the anchor is not the centre |
 | `Math.Round` | `33.416` where Altium prints `33.417` | `MidpointRounding.AwayFromZero`; also normalise `-0.000` to `0.000` |
 | `SetState_Rotation` | — | Absolute, not relative |
+| `IIntegratedLibraryManager.PlaceLibraryComponent` | Leaves the part it just placed selected; after a batch the last part shows selection handles, one Delete key from gone | `GetState_Selection()` / `SetState_Selection(false)` on each placed part (verified: exactly 1 deselected per 14-part run) |
 | `ISch_Component.SetState_IsMirrored(true)` | Part placed, labelled correctly, but not mirrored: pins and artwork unchanged | Call `Mirror(location)` on the component, then read orientation and location back; verify by pin geometry, not by the flag |
 | `doc is ISch_Lib` | Succeeds on a plain `.SchDoc` (object id `eSheet`), so a sheet is refused as a "library" | Compare `doc.GetState_ObjectId()` with `TObjectId.eSchLib`; never trust an SDK cast to classify |
 | `ILibCompInfoReader` on a YouEDA `.SchLib` | `NumComponentInfos() == 0` for a 2 MB library | It lists the `FileHeader` index (`CompCount=`, `LibRef0=`…), which YouEDA/AltiumSharp does not write. Zero means "no index", not "no symbols" |
