@@ -139,6 +139,9 @@ namespace AltiumSpike
         private TextBox relProject, relRev, relOutJob, relOutFolder, relDest;
         private CheckBox relGenerate;
 
+        // schematic placement
+        private TextBox spComps, spNets, spLib, spStub, spPitch, spCols;
+
         // via tools
         private TextBox rvNet, rvDist;
         private CheckBox rvOnlySel, rvCsv;
@@ -399,6 +402,10 @@ namespace AltiumSpike
                 new Section("OUTPUT",     "Fabrication",      BuildFabricationSection),
                 new Section(null,         "Variants",         BuildVariantsSection),
                 new Section(null,         "Release",          BuildReleaseSection),
+
+                // Last, so the remembered section index of every tab above is
+                // unchanged for anyone upgrading.
+                new Section("SCHEMATIC",  "Place from CSV",   BuildSchPlacementSection),
             };
         }
 
@@ -1141,6 +1148,15 @@ namespace AltiumSpike
         private UIElement PathRow(string label, string initial, string automation,
                                   bool pickFile, out TextBox box)
         {
+            return PathRow(label, initial, automation,
+                           pickFile ? "Choose the Output Job" : null,
+                           "Output Job (*.OutJob)|*.OutJob|All files (*.*)|*.*", out box);
+        }
+
+        // pickTitle null -> Browse picks a folder; otherwise a file matching pickFilter.
+        private UIElement PathRow(string label, string initial, string automation,
+                                  string pickTitle, string pickFilter, out TextBox box)
+        {
             StackPanel sp = new StackPanel();
             sp.Margin = new Thickness(0, 9, 0, 0);
             sp.Children.Add(Text(label, 11, TextDim, FontWeights.Normal, new Thickness(0, 0, 0, 5)));
@@ -1163,13 +1179,13 @@ namespace AltiumSpike
             AutomationName(tb, automation);
 
             TextBox captured = tb;
-            bool wantFile = pickFile;
+            string title = pickTitle, filter = pickFilter;
             Button browse = SecondaryButton("Browse", 30, 12);
             browse.Margin = new Thickness(7, 0, 0, 0);
             browse.Click += delegate
             {
-                string chosen = wantFile
-                    ? Settings.PickFile("Choose the Output Job", "Output Job (*.OutJob)|*.OutJob|All files (*.*)|*.*")
+                string chosen = title != null
+                    ? Settings.PickFile(title, filter)
                     : Settings.PickOutputFolder("Choose a folder");
                 if (chosen != null) captured.Text = chosen;
             };
@@ -3774,6 +3790,162 @@ namespace AltiumSpike
                 SetStatus(rep.Headline(), rep.Failed == 0 ? Green : Red);
             }
             catch (Exception ex) { Fail("Self-test", ex); }
+        }
+
+        // ---------------- schematic placement ----------------
+
+        private UIElement BuildSchPlacementSection()
+        {
+            StackPanel fields = new StackPanel();
+            fields.Children.Add(PathRow("Components CSV", Settings.GetValue("SpComps", ""),
+                                        "Components CSV: Designator, LCSC or LibRef, optional Library, X, Y, Rotation, Mirror",
+                                        "Choose the components CSV", "CSV files (*.csv)|*.csv|All files (*.*)|*.*", out spComps));
+            fields.Children.Add(PathRow("Nets CSV (optional)", Settings.GetValue("SpNets", ""),
+                                        "Nets CSV: Net, Designator, Pin -- or Net, Node such as R1.2",
+                                        "Choose the nets CSV", "CSV files (*.csv)|*.csv|All files (*.*)|*.*", out spNets));
+            fields.Children.Add(PathRow("Symbol library", Settings.GetValue("SpLib", SchPlacement.DefaultYouEdaLibrary()),
+                                        "Default schematic library, used for rows with no Library column",
+                                        "Choose the symbol library", "Schematic libraries (*.SchLib;*.IntLib)|*.SchLib;*.IntLib|All files (*.*)|*.*",
+                                        out spLib));
+
+            UIElement f0 = LabeledField("Stub mil", Settings.GetValue("SpStub", "300"),
+                                        "Length of the wire stub drawn from each connected pin, in mil", out spStub);
+            UIElement f1 = LabeledField("Auto pitch mil", Settings.GetValue("SpPitch", "1500"),
+                                        "Grid spacing for components with no X and Y, in mil", out spPitch);
+            UIElement f2 = LabeledField("Auto columns", Settings.GetValue("SpCols", "8"),
+                                        "Components per row when laying out automatically", out spCols);
+            Grid row = FieldRow(f0, f1, f2);
+            row.Margin = new Thickness(0, 11, 0, 0);
+            fields.Children.Add(row);
+
+            DockPanel actions = new DockPanel();
+            actions.LastChildFill = false;
+
+            Button go = PrimaryButton("Place on schematic", 32);
+            go.MinWidth = 160;
+            go.Click += delegate { DoSchPlacement(false); };
+            DockPanel.SetDock(go, Dock.Right);
+            actions.Children.Add(go);
+
+            Button dry = SecondaryButton("Dry run", 32, 12);
+            dry.MinWidth = 90;
+            dry.Margin = new Thickness(0, 0, 8, 0);
+            dry.Click += delegate { DoSchPlacement(true); };
+            DockPanel.SetDock(dry, Dock.Right);
+            actions.Children.Add(dry);
+
+            Button test = SecondaryButton("Schematic self-test", 32, 12);
+            test.MinWidth = 150;
+            test.Click += delegate { DoSchSelfTest(); };
+            DockPanel.SetDock(test, Dock.Left);
+            actions.Children.Add(test);
+
+            return Stack(ToolCard("Place components and nets", "MODIFIES SCHEMATIC", Hex("#3D3527"), Hex("#5F5130"), Hex("#F0C477"),
+                "Places the components in a CSV onto the focused schematic sheet, then connects them from a nets " +
+                "CSV with a short wire stub and a net label on each pin. Symbols come from YouEDA's youeda.SchLib " +
+                "(LCSC numbers are mapped through its family-classification files) or from a Library column. " +
+                "Both CSVs are checked in full before anything is placed; components already on the sheet are " +
+                "skipped. X and Y are in mil unless the header says mm. Nothing is saved.",
+                fields, actions));
+        }
+
+        private void DoSchPlacement(bool dryRun)
+        {
+            try
+            {
+                SchPlacement.Options o = new SchPlacement.Options();
+                o.ComponentsCsv = (spComps.Text ?? "").Trim();
+                o.NetsCsv = (spNets.Text ?? "").Trim();
+                o.DefaultLibrary = (spLib.Text ?? "").Trim();
+
+                if (o.ComponentsCsv.Length == 0 || !System.IO.File.Exists(o.ComponentsCsv))
+                { Complain("Choose the components CSV."); return; }
+                if (o.NetsCsv.Length > 0 && !System.IO.File.Exists(o.NetsCsv))
+                { Complain("The nets CSV does not exist: " + o.NetsCsv); return; }
+
+                double stub, pitch, cols;
+                if (!TryMM(spStub.Text, out stub) || stub <= 0.0)
+                { Complain("Stub must be a length in mil greater than 0."); return; }
+                if (!TryMM(spPitch.Text, out pitch) || pitch <= 0.0)
+                { Complain("Auto pitch must be a length in mil greater than 0."); return; }
+                if (!TryMM(spCols.Text, out cols) || cols < 1.0 || cols != Math.Floor(cols))
+                { Complain("Auto columns must be a whole number of at least 1."); return; }
+                o.StubMil = stub;
+                o.AutoPitchMil = pitch;
+                o.AutoColumns = (int)cols;
+                o.DryRun = dryRun;
+
+                Settings.SetValue("SpComps", o.ComponentsCsv);
+                Settings.SetValue("SpNets", o.NetsCsv);
+                Settings.SetValue("SpLib", o.DefaultLibrary);
+                Settings.SetValue("SpStub", spStub.Text.Trim());
+                Settings.SetValue("SpPitch", spPitch.Text.Trim());
+                Settings.SetValue("SpCols", spCols.Text.Trim());
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+                o.OutputFolder = folder;
+
+                SetStatus(dryRun ? "Checking the CSVs…" : "Placing on the schematic…", Amber);
+                SchPlacement.Result r = SchPlacement.Run(client, o);
+
+                List<string> lines = new List<string>();
+                foreach (string n in r.Notes) lines.Add(n);
+                int shown = 0, cap = 30;
+                foreach (string e in r.Errors) { if (shown++ < cap) lines.Add("ERROR — " + e); }
+                foreach (string w in r.Warnings) { if (shown++ < cap) lines.Add("warning — " + w); }
+                if (shown > cap) lines.Add("… and " + (shown - cap) + " more; see the report CSVs");
+                if (r.PartsCsvPath.Length > 0) lines.Add(r.PartsCsvPath);
+                if (r.LabelsCsvPath.Length > 0) lines.Add(r.LabelsCsvPath);
+
+                if (r.Refused)
+                {
+                    ShowResult("Nothing placed", Red, lines.ToArray());
+                    SetStatus(r.Errors.Count + " problem(s) to fix before placing", Red);
+                }
+                else if (dryRun)
+                {
+                    ShowResult("Dry run", r.Warnings.Count > 0 ? Amber : Green, lines.ToArray());
+                    SetStatus("Dry run — the sheet was not changed", Amber);
+                }
+                else
+                {
+                    bool clean = r.Errors.Count == 0;
+                    ShowResult(clean ? "Placed on the schematic" : "Placed, with problems", clean ? Green : Amber, lines.ToArray());
+                    SetStatus(r.PartsPlaced + " components placed, " + r.Labelled + " pins labelled" +
+                              (clean ? "" : ", " + r.Errors.Count + " problem(s)"), clean ? Green : Amber);
+                }
+            }
+            catch (Exception ex) { Fail("Schematic placement", ex); }
+        }
+
+        private void DoSchSelfTest()
+        {
+            try
+            {
+                string lib = (spLib.Text ?? "").Trim();
+                if (lib.Length == 0 || !System.IO.File.Exists(lib))
+                { Complain("Set the symbol library first -- the self-test places one of its symbols."); return; }
+                Settings.SetValue("SpLib", lib);
+
+                string folder = EnsureOutputFolder();
+                if (folder == null) { SetStatus("Cancelled", TextDim); return; }
+
+                SetStatus("Running the schematic self-test…", Amber);
+                SelfTest.Report rep = SelfTest.RunSchematic(client, folder, lib);
+
+                List<string> lines = new List<string>();
+                lines.Add(rep.Headline());
+                foreach (SelfTest.Check c in rep.Checks)
+                    if (c.Verdict == SelfTest.Verdict.Fail || c.Verdict == SelfTest.Verdict.Info)
+                        lines.Add((c.Verdict == SelfTest.Verdict.Fail ? "FAILED — " : "note — ") + c.Name + ": " + c.Actual);
+                if (rep.Path.Length > 0) lines.Add(rep.Path);
+
+                ShowResult(rep.Failed == 0 ? "Schematic self-test passed" : "Schematic self-test found failures",
+                           rep.Failed == 0 ? Green : Red, lines.ToArray());
+                SetStatus(rep.Headline(), rep.Failed == 0 ? Green : Red);
+            }
+            catch (Exception ex) { Fail("Schematic self-test", ex); }
         }
 
         // ---------------- report handlers ----------------

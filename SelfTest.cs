@@ -53,7 +53,7 @@ using System.Text;
 
 namespace AltiumSpike
 {
-    public static class SelfTest
+    public static partial class SelfTest
     {
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -1757,21 +1757,29 @@ namespace AltiumSpike
         // ==================================================================
         private static string Write(Report rep, IPCB_Board board, string folder)
         {
+            string subject = "";
+            try { subject = "Board `" + board.GetState_FileName() + "`"; } catch { }
+            string note = !rep.ModifyingRun
+                ? "Read-only checks only. Board-modifying checks were not run."
+                : "Includes board-modifying checks. They built their own geometry in a clear area " +
+                  "off the board, verified it and removed it again; the checks that touched existing " +
+                  "objects recorded and restored them. Nothing was written to disk — the document is " +
+                  "modified in memory only, so an unsaved board is unchanged on disk either way.";
+            return Write(rep, "# AltiumSpike self-test", subject, note, folder, "spike_selftest.md");
+        }
+
+        private static string Write(Report rep, string title, string subject, string note,
+                                    string folder, string fileName)
+        {
             List<string> md = new List<string>();
-            md.Add("# AltiumSpike self-test");
+            md.Add(title);
             md.Add("");
             md.Add("Run " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", Inv));
-            try { md.Add("Board `" + board.GetState_FileName() + "`"); } catch { }
+            if (subject.Length > 0) md.Add(subject);
             md.Add("");
             md.Add("**" + rep.Headline() + "**");
             md.Add("");
-            if (!rep.ModifyingRun)
-                md.Add("> Read-only checks only. Board-modifying checks were not run.");
-            else
-                md.Add("> Includes board-modifying checks. They built their own geometry in a clear area " +
-                       "off the board, verified it and removed it again; the checks that touched existing " +
-                       "objects recorded and restored them. Nothing was written to disk — the document is " +
-                       "modified in memory only, so an unsaved board is unchanged on disk either way.");
+            md.Add("> " + note);
             md.Add("");
 
             string section = null;
@@ -1799,7 +1807,7 @@ namespace AltiumSpike
             md.Add("A check passes only when its result was compared against something — a count, a " +
                    "coordinate, a file read back. Not throwing is not a pass.");
 
-            string path = Path.Combine(folder, "spike_selftest.md");
+            string path = Path.Combine(folder, fileName);
             try
             {
                 File.WriteAllLines(path, md, new UTF8Encoding(false));
