@@ -26,7 +26,7 @@
         <Altium install>\System\Altium.SDK.Interfaces.dll
 
     The install folder is usually C:\Program Files\Altium\AD<nn>, where
-    <nn> is the version the installer FIRST created -- Altium keeps that
+    <nn> is the version the installer FIRST created; Altium keeps that
     folder name across upgrades, so a current Altium 26 may well live in a
     folder called AD22. Check the actual path rather than assuming.
 
