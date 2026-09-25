@@ -54,9 +54,10 @@ namespace AltiumSpike
             r.Run("Schematic open", "a schematic sheet has focus", delegate
             {
                 string why;
-                if (!SchPlacement.TryGetSheet(client, out server, out doc, out why)) return "FAIL: " + why;
-                try { docName = doc.GetState_DocumentName() ?? ""; } catch { }
-                return "PASS: " + Path.GetFileName(docName) + " -- " +
+                bool ok = SchPlacement.TryGetSheet(client, out server, out doc, out why);
+                docName = SchPlacement.LastSheetDiagnosis;
+                if (!ok) return "FAIL: " + why;
+                return "PASS: " + SchPlacement.LastSheetDiagnosis + " -- " +
                        SchPlacement.Count(doc, TObjectId.eSchComponent) + " components, " +
                        SchPlacement.Count(doc, TObjectId.eWire) + " wires, " +
                        SchPlacement.Count(doc, TObjectId.eNetLabel) + " net labels";

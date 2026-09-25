@@ -324,14 +324,39 @@ namespace AltiumSpike
 
             doc = server.GetCurrentSchDocument();
             if (doc == null) { why = "no schematic has focus -- click into the target .SchDoc first"; return false; }
-            if (doc is ISch_Lib)
+
+            // Sheet or library is decided by the object's own ID and the file
+            // extension, NOT by "doc is ISch_Lib". The first version used the
+            // cast and refused a focused sheet as a "library"; SDK wrappers
+            // have satisfied casts they should not before (see the
+            // IPCB_ElectricalLayer trap in AGENTS.md). The cast's answer is
+            // still recorded so the next report settles which it was.
+            string name = "";
+            try { name = doc.GetState_DocumentName() ?? ""; } catch { }
+            TObjectId id = TObjectId.eSheet;
+            bool idKnown = false;
+            try { id = doc.GetState_ObjectId(); idKnown = true; } catch { }
+            bool castSaysLib = doc is ISch_Lib;
+            bool libByName = name.EndsWith(".SchLib", StringComparison.OrdinalIgnoreCase);
+            bool libById = idKnown && id == TObjectId.eSchLib;
+
+            LastSheetDiagnosis = Path.GetFileName(name) + " (object id " + (idKnown ? id.ToString() : "unreadable") +
+                                 ", cast to ISch_Lib " + (castSaysLib ? "succeeds" : "fails") + ")";
+            Log.Write("SchPlacement.TryGetSheet: " + LastSheetDiagnosis);
+
+            if (libById || libByName)
             {
-                why = "the focused document is a schematic LIBRARY -- focus the target .SchDoc instead";
+                why = "the focused document is the schematic LIBRARY " + LastSheetDiagnosis +
+                      " -- click into the target .SchDoc, then run again";
                 doc = null;
                 return false;
             }
             return true;
         }
+
+        // What TryGetSheet last saw, for reports: name, object id, and what
+        // the ISch_Lib cast said.
+        public static string LastSheetDiagnosis = "";
 
         // The library's component names, read from the file without opening
         // it as a document. Null when it cannot be read.
