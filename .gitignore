@@ -19,3 +19,6 @@ AltiumSpike.log
 .vs/
 .vscode/
 .idea/
+
+# Machine-specific agent notes (personal paths); never committed
+CLAUDE.local.md

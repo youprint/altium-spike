@@ -23,6 +23,16 @@ without breaking it, and what a good answer looks like here.
    Make the code report what it actually saw and ask for another run.
 6. **Never touch the user's real board files on disk,** and never save a
    document you modified. Work on scratch copies.
+7. **Work autonomously, and ship what is green.** The owner has asked for
+   this as a standing rule: make the calls yourself, and after every change
+   that builds clean and passes every harness, commit, `git push origin main`,
+   and deploy (`./Deploy.ps1`). Never push or deploy a red build. If Altium
+   is running, `Deploy.ps1` refuses -- say so and deploy on the next turn;
+   never pass `-Force`, the DLL is locked while Altium runs. Stop and ask only
+   before something destructive or before breaking another rule in this file.
+8. **Say what to press and what to expect.** You cannot run Altium. After a
+   deploy, name the exact button or command, the scratch document to run it
+   on, and the result that would mean it works.
 
 ---
 
@@ -57,6 +67,9 @@ dotnet run -- ../../Assemblies/Altium.SDK.Interfaces.dll "IPCB_Polygon(Helper)?$
 ./Deploy.ps1
 ```
 
+`global.json` pins the .NET 8 SDK (`8.0.425`, rolling forward within the 8.0
+feature band). A newer SDK on the machine is ignored on purpose.
+
 The extension is loaded at Altium startup. **A new DLL needs an Altium
 restart**; reopening the window is not enough. If a self-test report looks
 unchanged after a fix, check its timestamp and the section list first — the
@@ -69,18 +82,25 @@ old DLL is the most common explanation.
 | Path | Role |
 | --- | --- |
 | `PluginFactory.cs` | Entry point. The class **must** be `CSharpPlugin.PluginFactory` exactly, and `InvokePluginFactory(IClient)` must be an instance method. Otherwise Altium loads nothing and reports nothing. |
-| `SpikeModule.cs` | `ServerModule`; registers commands in `InitializeCommands()`. |
-| `SpikeWindow.cs` | The whole UI, in code (no XAML). `Sections()` near the top is the sidebar table. |
+| `SpikeModule.cs` | `ServerModule`; registers commands in `InitializeCommands()`. A new command needs an entry in `AltiumSpike.Ins` **and** `AltiumSpike.rcs` as well. The window is the main entry point, so a new tool usually needs only a card. |
+| `SpikeWindow.cs` | The whole UI, in code (no XAML), ~200 KB -- search it, don't read it whole. `Sections()` near the top is the sidebar table; append new sections at the end so the remembered tab index of the others does not move. |
 | `<Area>.cs` | One file per group of functions (`Cleanup`, `Placement`, `Polygons`, `Connectivity`, …). Static methods returning a `Result`. |
 | `PcbDraw.cs` | Shared primitives: `Layer`, `Line`, `Text`, `ClearArea`. Use these rather than calling the object factory directly. |
-| `Ipc2221.cs`, `FilletGeometry.cs`, `FenceGeometry.cs`, `PolyGeometry.cs`, `ReleaseBundle.cs` | **Altium-free.** No `PCB`, `DXP`, `EDP` or WPF types. Compiled directly by `tests/`. |
-| `SelfTest.cs` | Runs every function against the open board; writes `spike_selftest.md`. |
+| `SchPlacement.cs` | Schematic: places components from CSV on the focused `.SchDoc` and connects them with wire stubs and net labels. Symbols from YouEDA's `youeda.SchLib` or a `Library` column. |
+| `Ipc2221.cs`, `FilletGeometry.cs`, `FenceGeometry.cs`, `PolyGeometry.cs`, `ReleaseBundle.cs`, `SchPlacementPlan.cs` | **Altium-free.** No `PCB`, `SCH`, `DXP`, `EDP` or WPF types. Compiled directly by `tests/`. |
+| `SelfTest.cs`, `SchSelfTest.cs` | One `partial` class. `Run` checks every function against the open board and writes `spike_selftest.md`; `RunSchematic` checks schematic placement against the focused sheet and writes `spike_selftest_sch.md`. |
 | `tests/<Name>Tests/` | Console harnesses. Each `.csproj` includes the shipping source file by relative path — **never a copy**. |
 | `tools/SdkDump/` | Metadata dumper for the SDK assemblies. |
 
 `tests/` and `tools/` are excluded from the plugin build in the root `.csproj`.
 Do not remove that exclusion: without it the plugin compiles the harnesses in,
 and fails with duplicate assembly attributes once any harness has been run.
+
+**Style** (also in `.editorconfig`): a header comment on every file saying
+what it is for and what was learned the hard way; explicit types, no `var`;
+Allman braces; 4-space indent; block-scoped `namespace AltiumSpike`. `PCB`
+and `SCH` both define `TObjectId`, `TObjectSet` and `CoordRect`, so a file
+imports one or the other, never both.
 
 ---
 
@@ -223,8 +243,11 @@ finding, not an excuse.
 
 - **Never commit** anything from `Assemblies/`, `bin/`, `obj/`, or any `.dll`.
   The SDK is proprietary and this repo is public.
-- **Never save** a PCB document the plugin has modified. Nothing here writes
-  the document to disk; keep it that way.
+- **Never save** a PCB or schematic document the plugin has modified. Nothing
+  here writes a document to disk; keep it that way.
+- **Machine-specific notes** -- test boards, output folders, library
+  locations -- go in `CLAUDE.local.md`, which is git-ignored. This repo is
+  public; no personal path is ever committed.
 - Board-modifying functions are opt-in, clearly labelled, and report exactly
   what they changed.
 - Renumbering designators desynchronises the PCB from the schematic. It writes
