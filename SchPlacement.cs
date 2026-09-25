@@ -31,14 +31,25 @@
 //
 // NOTHING IS SAVED. The sheet is changed in memory; saving is the user's call.
 //
-// UNVERIFIED ON A SHEET (compiles against SDK metadata; the schematic
-// self-test is what settles each of these):
-//   - PlaceLibraryComponent's "Orientation=|Location.X=|Location.Y=" keys are
-//     from Altium's DelphiScript examples. Step 3 corrects both if ignored,
-//     and reports that it had to.
-//   - The robot messages pass null as the broadcast target (the SDK types the
-//     slot as ISch_BasicContainer and exposes no broadcast object). Undo may
-//     not capture the change; the change itself does not depend on them.
+// VERIFIED ON A SHEET (schematic self-test, 2026-09-25 20:38, 8 pass / 0 fail,
+// Sheet1.SchDoc with youeda.SchLib):
+//   - PlaceLibraryComponent places from YouEDA's SchLib even though that file
+//     has no FileHeader symbol index, and it honours the
+//     "Orientation=|Location.X=|Location.Y=" keys exactly; step 3 found
+//     nothing to correct. Orientation counts counter-clockwise.
+//   - Pin Location + Length along the pin's orientation is the electrical end
+//     (every tip points away from the body, and tips rotate with the part).
+//   - Wire vertices and label anchors read back where they were put, for
+//     left- and down-pointing pins (the right-aligned label cases).
+//
+// STILL UNVERIFIED:
+//   - Connectivity as Altium's compiler sees it. The anchors are on the wires
+//     and the wires start on the tips, but no check compiles the project; the
+//     Navigator after a real placement is the proof.
+//   - Mirror, multi-pin ICs, multi-part symbols.
+//   - Undo: the robot messages pass null as the broadcast target (the SDK
+//     types the slot as ISch_BasicContainer and exposes no broadcast object).
+//     The change itself does not depend on them.
 
 using DXP;
 using SCH;
