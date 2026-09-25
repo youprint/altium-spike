@@ -138,6 +138,8 @@ the DelphiScript API. Before writing any call:
 | Component body vs anchor | Pick-and-place off by ~0.18 mm | Use `BoundingRectangleNoNameComment()` for the body; the anchor is not the centre |
 | `Math.Round` | `33.416` where Altium prints `33.417` | `MidpointRounding.AwayFromZero`; also normalise `-0.000` to `0.000` |
 | `SetState_Rotation` | — | Absolute, not relative |
+| `doc is ISch_Lib` | Succeeds on a plain `.SchDoc` (object id `eSheet`), so a sheet is refused as a "library" | Compare `doc.GetState_ObjectId()` with `TObjectId.eSchLib`; never trust an SDK cast to classify |
+| `ILibCompInfoReader` on a YouEDA `.SchLib` | `NumComponentInfos() == 0` for a 2 MB library | It lists the `FileHeader` index (`CompCount=`, `LibRef0=`…), which YouEDA/AltiumSharp does not write. Zero means "no index", not "no symbols" |
 
 Add to this table whenever a new one is found. It is the most valuable part of
 this file.

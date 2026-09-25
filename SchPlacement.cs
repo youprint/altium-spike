@@ -380,6 +380,18 @@ namespace AltiumSpike
                     string name = info.GetState_CompName();
                     if (!string.IsNullOrEmpty(name)) names.Add(name);
                 }
+
+                // The reader lists what the library's FileHeader index says
+                // (CompCount=, LibRef0=, ...), not what is stored in it.
+                // YouEDA writes youeda.SchLib through AltiumSharp with no such
+                // index -- 0 symbols reported for a 2 MB library -- so an empty
+                // answer means "cannot check in advance", not "no symbols".
+                if (names.Count == 0)
+                {
+                    why = Path.GetFileName(path) + " has no symbol index (its FileHeader has no CompCount/LibRef " +
+                          "entries, as YouEDA writes it), so its symbol names cannot be checked in advance";
+                    return null;
+                }
                 return names;
             }
             catch (Exception ex)

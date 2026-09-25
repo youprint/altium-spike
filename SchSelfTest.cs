@@ -69,13 +69,28 @@ namespace AltiumSpike
                 {
                     string why;
                     names = SchPlacement.ReadLibraryNames(server, libraryPath, out why);
-                    if (names == null) return "FAIL: " + why;
-                    if (names.Count == 0) return "FAIL: " + Path.GetFileName(libraryPath) + " lists no symbols";
-                    List<string> sorted = new List<string>(names);
-                    sorted.Sort(StringComparer.Ordinal);
-                    symbol = sorted[0];
-                    return "PASS: " + names.Count + " symbols in " + Path.GetFileName(libraryPath) +
-                           "; testing with " + symbol;
+                    if (names != null)
+                    {
+                        List<string> sorted = new List<string>(names);
+                        sorted.Sort(StringComparer.Ordinal);
+                        symbol = sorted[0];
+                        return "PASS: " + names.Count + " symbols in " + Path.GetFileName(libraryPath) +
+                               "; testing with " + symbol;
+                    }
+                    if (!File.Exists(libraryPath)) return "FAIL: " + why;
+
+                    // No index (YouEDA's libraries): take a symbol name from
+                    // YouEDA's own classification instead. Whether Altium can
+                    // place from an index-less library is then answered by the
+                    // placement check below.
+                    Dictionary<string, string> map = SchPlacement.LoadYouEdaMap(libraryPath, null);
+                    if (map.Count == 0)
+                        return "FAIL: " + why + ", and no YouEDA family-classification.csv next to it names one";
+                    List<string> candidates = new List<string>(map.Values);
+                    candidates.Sort(StringComparer.Ordinal);
+                    symbol = candidates[0];
+                    return "INFO: " + why + ". Testing with " + symbol + ", taken from YouEDA's classification (" +
+                           map.Count + " names)";
                 });
             }
 
