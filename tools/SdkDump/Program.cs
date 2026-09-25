@@ -87,8 +87,13 @@ class P
                 .Select(i => HandleName(r, i.Interface))
                 .Where(s => s != null).ToArray();
 
+            // The base class is listed first. It is how "is this a WinForms
+            // Form or a WPF control?" gets answered without loading anything.
+            string baseName = t.BaseType.IsNil ? null : HandleName(r, t.BaseType);
+            if (baseName == "Object") baseName = null;
+            var bases = (baseName != null ? new[] { baseName } : new string[0]).Concat(ifaces).ToArray();
             Console.WriteLine((isIface ? "interface " : "class ") + full
-                + (ifaces.Length > 0 ? " : " + string.Join(", ", ifaces) : ""));
+                + (bases.Length > 0 ? " : " + string.Join(", ", bases) : ""));
 
             if (!membersToo) continue;
 
@@ -117,14 +122,26 @@ class P
                     MethodAttributes.Assembly => "internal",
                     _ => acc.ToString()
                 };
+                if ((m.Attributes & MethodAttributes.Static) != 0) vis += " static";
                 if ((m.Attributes & MethodAttributes.Abstract) != 0) vis += " ABSTRACT";
                 else if ((m.Attributes & MethodAttributes.Virtual) != 0) vis += " virtual";
 
                 string mn = r.GetString(m.Name);
                 MethodSignature<string> sig;
                 try { sig = m.DecodeSignature(prov, null); } catch { continue; }
+
+                // Parameter NAMES too: two adjacent String parameters (a
+                // view name and a caption, say) cannot be told apart by type.
+                var names = new string[sig.ParameterTypes.Length];
+                foreach (var ph in m.GetParameters())
+                {
+                    var pd = r.GetParameter(ph);
+                    int i = pd.SequenceNumber - 1;          // 0 is the return value
+                    if (i >= 0 && i < names.Length) names[i] = r.GetString(pd.Name);
+                }
+                var ps = sig.ParameterTypes.Select((pt, i) => names[i] == null ? pt : pt + " " + names[i]);
                 Console.WriteLine("    " + vis + " " + sig.ReturnType + " " + mn
-                    + "(" + string.Join(", ", sig.ParameterTypes) + ")");
+                    + "(" + string.Join(", ", ps) + ")");
             }
             Console.WriteLine();
         }
