@@ -48,9 +48,16 @@
 //     and, once designators were checked project-wide, no other error. 5/5
 //     placed, 11/11 labelled.
 //
+//   - A 14-part / 47-pin test (test2 CSVs, 21:27): every label on the pin
+//     the nets CSV named, 14/14 nets and 47/47 pins identical to the netlist
+//     predicted offline from the same CSVs; pins matched by number, by name
+//     and by Node; all four rotations; a 14-pin IC.
+//
 // STILL UNVERIFIED:
-//   - Per-net pin counts in the Navigator (only the single-pin net was read).
-//   - Mirror, ICs with many pins, multi-part symbols.
+//   - Mirror. SetState_IsMirrored(true) set a flag and mirrored nothing (Q201
+//     in that test); Finish now calls Mirror(location). The schematic
+//     self-test's "Mirror flips the part" check settles it.
+//   - Multi-part symbols (none exist in youeda.SchLib to test with).
 //   - Undo: the robot messages pass null as the broadcast target (the SDK
 //     types the slot as ISch_BasicContainer and exposes no broadcast object).
 //     The change itself does not depend on them.
@@ -602,7 +609,32 @@ namespace AltiumSpike
                     corrected = true;
                 }
 
-                if (p.Mirror && !c.GetState_IsMirrored()) c.SetState_IsMirrored(true);
+                // Mirror(point), NOT SetState_IsMirrored(true). The setter only
+                // flips the flag: the first real test (Q201, 2026-09-25 21:27)
+                // came out with its gate still on the left, labelled correctly
+                // but not mirrored. Mirror() moves the graphics and the pins,
+                // about the component's own location. Flipping in sheet space
+                // can change a rotated part's orientation, so that is read
+                // back and restored.
+                if (p.Mirror && !c.GetState_IsMirrored())
+                {
+                    c.Mirror(c.GetState_Location());
+                    if (!c.GetState_IsMirrored()) note += "Mirror() left the mirrored flag unset; ";
+                    TRotationBy90 afterMirror = c.GetState_Orientation();
+                    if (afterMirror != want)
+                    {
+                        c.SetState_Orientation(want);
+                        note += "orientation " + Degrees(afterMirror) + " after mirroring -> " + p.Rotation + "; ";
+                        corrected = true;
+                    }
+                    Point m = c.GetState_Location();
+                    if (m.X != x || m.Y != y)
+                    {
+                        c.MoveToXY(x, y);
+                        note += "moved back to " + Mil(x) + "," + Mil(y) + " after mirroring; ";
+                        corrected = true;
+                    }
+                }
             }
             finally
             {
