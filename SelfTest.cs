@@ -1466,6 +1466,10 @@ namespace AltiumSpike
                 return "PASS: " + x.Changed + " of " + polys + " repoured, none stale afterwards";
             });
 
+            // The Import commands (objects, pours, regions, lock/unlock), in
+            // their own strip of the scratch area -- see ImportSelfTest.cs.
+            ImportChecks(r, pcbServer, board, folder, ox, oy);
+
             // ==============================================================
             // Clean up after ourselves.
             //

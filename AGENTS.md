@@ -88,7 +88,7 @@ old DLL is the most common explanation.
 | `PcbDraw.cs` | Shared primitives: `Layer`, `Line`, `Text`, `ClearArea`. Use these rather than calling the object factory directly. |
 | `SchPlacement.cs` | Schematic: places components from CSV on the focused `.SchDoc` and connects them with wire stubs and net labels. Symbols from YouEDA's `youeda.SchLib` or a `Library` column. |
 | `Ipc2221.cs`, `FilletGeometry.cs`, `FenceGeometry.cs`, `PolyGeometry.cs`, `ReleaseBundle.cs`, `SchPlacementPlan.cs` | **Altium-free.** No `PCB`, `SCH`, `DXP`, `EDP` or WPF types. Compiled directly by `tests/`. |
-| `SelfTest.cs`, `SchSelfTest.cs` | One `partial` class. `Run` checks every function against the open board and writes `spike_selftest.md`; `RunSchematic` checks schematic placement against the focused sheet and writes `spike_selftest_sch.md`. |
+| `SelfTest.cs`, `ImportSelfTest.cs`, `SchSelfTest.cs` | One `partial` class. `Run` checks every function against the open board and writes `spike_selftest.md` (the Import commands' checks live in `ImportSelfTest.cs`, in their own strip below the scratch origin); `RunSchematic` checks schematic placement against the focused sheet and writes `spike_selftest_sch.md`. |
 | `tests/<Name>Tests/` | Console harnesses. Each `.csproj` includes the shipping source file by relative path — **never a copy**. |
 | `tools/SdkDump/` | Metadata dumper for the SDK assemblies. |
 
