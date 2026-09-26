@@ -169,13 +169,27 @@ namespace AltiumSpike
             pM.Rotation = 0;
             pM.Mirror = true;
 
-            ISch_Component c0 = null, c90 = null, cM = null;
+            // Mirrored AND rotated: the combination no earlier check covered.
+            // The CSV means what Altium's Properties panel shows -- mirror in
+            // the part's own frame, then rotate -- so every tip offset must be
+            // the 0-degree offset flipped left-right, then turned 90 degrees:
+            // (x, y) -> (-x, y) -> (-y, -x).
+            SchPlacementPlan.Part pM90 = new SchPlacementPlan.Part();
+            pM90.Designator = "SPIKE_TM90";
+            pM90.LibRef = symbol;
+            pM90.XMil = SchScratchXMil + 9000.0;
+            pM90.YMil = SchScratchYMil;
+            pM90.Rotation = 90;
+            pM90.Mirror = true;
+
+            ISch_Component c0 = null, c90 = null, cM = null, cM90 = null;
+            string mirrorRotNote = "";
             List<ISch_BasicContainer> prims = new List<ISch_BasicContainer>();
             SchPlacement.Context ctx = new SchPlacement.Context(client, server, doc);
 
             r.Section = "Schematic (scratch area)";
 
-            r.Run("Place from library", "three new components, one per placement call", delegate
+            r.Run("Place from library", "four new components, one per placement call", delegate
             {
                 IIntegratedLibraryManager ilm = EDP.Utils.LoadIntegratedLibraryManager();
                 if (ilm == null) return "FAIL: Altium's integrated library manager is unavailable";
@@ -186,16 +200,18 @@ namespace AltiumSpike
                 c90 = SchPlacement.PlaceOne(doc, ilm, p90, libraryPath, ids, out e90);
                 string eM;
                 cM = SchPlacement.PlaceOne(doc, ilm, pM, libraryPath, ids, out eM);
+                string eM90;
+                cM90 = SchPlacement.PlaceOne(doc, ilm, pM90, libraryPath, ids, out eM90);
                 int after = SchPlacement.Count(doc, TObjectId.eSchComponent);
 
-                if (c0 == null || c90 == null || cM == null)
-                    return "FAIL: " + (e0 ?? "") + " " + (e90 ?? "") + " " + (eM ?? "");
-                if (after != compsBefore + 3)
-                    return "FAIL: components " + compsBefore + " -> " + after + ", expected +3";
-                return "PASS: " + symbol + " placed three times; components " + compsBefore + " -> " + after;
+                if (c0 == null || c90 == null || cM == null || cM90 == null)
+                    return "FAIL: " + (e0 ?? "") + " " + (e90 ?? "") + " " + (eM ?? "") + " " + (eM90 ?? "");
+                if (after != compsBefore + 4)
+                    return "FAIL: components " + compsBefore + " -> " + after + ", expected +4";
+                return "PASS: " + symbol + " placed four times; components " + compsBefore + " -> " + after;
             });
 
-            if (c0 != null && c90 != null && cM != null)
+            if (c0 != null && c90 != null && cM != null && cM90 != null)
             {
                 r.Run("Placement call honours location and rotation", "the parameter string is obeyed as given", delegate
                 {
@@ -217,6 +233,7 @@ namespace AltiumSpike
                         SchPlacement.Finish(ctx, c90, p90, out n90);
                         string nM;
                         SchPlacement.Finish(ctx, cM, pM, out nM);
+                        SchPlacement.Finish(ctx, cM90, pM90, out mirrorRotNote);
                     }
                     finally { ctx.End(); }
 
@@ -268,6 +285,45 @@ namespace AltiumSpike
                     if (same == compared)
                         return "FAIL: tips unchanged -- the part was not mirrored (mirrored flag " + (flag ? "set" : "not set") + ")";
                     return "FAIL: " + (compared - flipped) + " of " + compared + " tips not reflected -- " + first;
+                });
+
+                List<SchPlacement.PinGeom> pinsM90 = Visible(SchPlacement.Pins(cM90));
+
+                r.Run("Mirror with rotation", "a mirrored 90-degree copy: tips flipped in the part's frame, then rotated", delegate
+                {
+                    if (pins0.Count == 0) return "SKIP: no visible pins";
+                    Point l0 = c0.GetState_Location(), lR = cM90.GetState_Location();
+                    int deg = SchPlacement.Degrees(cM90.GetState_Orientation());
+                    bool flag = cM90.GetState_IsMirrored();
+                    string state = "reads " + deg + " deg, mirrored flag " + (flag ? "set" : "NOT set") +
+                                   (mirrorRotNote.Length > 0 ? "; Finish: " + mirrorRotNote.Trim() : "");
+
+                    Dictionary<string, SchPlacement.PinGeom> byR = new Dictionary<string, SchPlacement.PinGeom>(StringComparer.OrdinalIgnoreCase);
+                    foreach (SchPlacement.PinGeom g in pinsM90) byR[g.Info.Designator] = g;
+                    int good = 0, rotatedOnly = 0, flippedAfter = 0, compared = 0;
+                    string first = null;
+                    foreach (SchPlacement.PinGeom g in pins0)
+                    {
+                        SchPlacement.PinGeom h;
+                        if (!byR.TryGetValue(g.Info.Designator, out h)) continue;
+                        compared++;
+                        long ox = g.TipX - l0.X, oy = g.TipY - l0.Y;
+                        long hx = h.TipX - lR.X, hy = h.TipY - lR.Y;
+                        if (hx == -oy && hy == -ox) good++;               // mirror, then rotate 90
+                        else if (hx == -oy && hy == ox) rotatedOnly++;    // rotated, mirror lost
+                        else if (hx == oy && hy == ox) flippedAfter++;    // rotated, then flipped in sheet space
+                        else if (first == null)
+                            first = "pin " + g.Info.Designator + " offset " + SchPlacement.Mil(ox) + "," + SchPlacement.Mil(oy) +
+                                    " at 0 deg but " + SchPlacement.Mil(hx) + "," + SchPlacement.Mil(hy) + " mirrored at 90";
+                    }
+                    if (compared == 0) return "FAIL: no pin designator in common between the copies";
+                    if (good == compared && deg == 90 && flag)
+                        return "PASS: all " + compared + " tips mirrored then rotated; " + state;
+                    if (rotatedOnly == compared) return "FAIL: rotated but not mirrored -- " + state;
+                    if (flippedAfter == compared)
+                        return "FAIL: flipped in sheet space after rotating (reads as mirrored at 270) -- " + state;
+                    if (good == compared) return "FAIL: geometry right but " + state;
+                    return "FAIL: " + (compared - good) + " of " + compared + " tips wrong -- " + first + "; " + state;
                 });
 
                 r.Run("Pin tips point away from the body", "every tip is farther from the body centre than its base", delegate
@@ -360,6 +416,7 @@ namespace AltiumSpike
                     if (c0 != null) ctx.Remove(c0);
                     if (c90 != null) ctx.Remove(c90);
                     if (cM != null) ctx.Remove(cM);
+                    if (cM90 != null) ctx.Remove(cM90);
                 }
                 finally { ctx.End(); }
 
@@ -370,7 +427,7 @@ namespace AltiumSpike
                     return "FAIL: components " + compsBefore + " -> " + comps + ", wires " + wiresBefore + " -> " + wires +
                            ", labels " + labelsBefore + " -> " + labels + " -- delete what is left at " +
                            SchScratchXMil + "," + SchScratchYMil + " mil by hand, and do not save";
-                return "PASS: " + (prims.Count + (c0 != null ? 1 : 0) + (c90 != null ? 1 : 0) + (cM != null ? 1 : 0)) +
+                return "PASS: " + (prims.Count + (c0 != null ? 1 : 0) + (c90 != null ? 1 : 0) + (cM != null ? 1 : 0) + (cM90 != null ? 1 : 0)) +
                        " scratch object(s) removed; census back to " + comps + " components, " + wires +
                        " wires, " + labels + " labels";
             });
