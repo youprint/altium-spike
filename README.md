@@ -1,27 +1,33 @@
 # AltiumSpike
 
 A C# extension for **Altium Designer 26**: CSV import/export, JLCPCB assembly
-output, high-speed and EMC checks, board cleanup, silkscreen and geometry
-editing, fabrication documentation and release packaging — in one window.
+output, high-speed and EMC checks, board cleanup, silkscreen, placement and
+geometry editing, fabrication documentation, release packaging, and placing
+components and nets on a **schematic** from CSV — in one window.
 
 It exports board data for external tooling, places components, tracks, vias,
 pours and regions back from CSV, locks and unlocks components, generates
 JLCPCB-ready BOM and pick-and-place files, exports per-net and per-pin-pair
 length and delay, builds via fences along selected RF traces, draws the layer
-stackup and fabrication notes onto the board, and packages a dated release
-archive.
+stackup and fabrication notes onto the board, packages a dated release
+archive, and builds a schematic sheet from a components CSV and a nets CSV.
+A self-test runs every function against the open document and reports what it
+found.
 
-The window is organised into fourteen sections down a left sidebar:
+The window opens from both the PCB and the schematic editor (**AltiumSpike…**
+on the menu bar, and under **Tools**) and is organised into seventeen sections
+down a left sidebar:
 
 | Group | Sections |
 | --- | --- |
 | **Data** | Import / Export · Reports |
 | **High-speed** | Via fence · Via tools · Copper & current |
 | **Design** | Design rules · Testpoints · Cleanup |
-| **Edit** | Silkscreen · Geometry · Layers |
+| **Edit** | Silkscreen · Placement · Geometry · Layers · Polygons |
 | **Output** | Fabrication · Variants · Release |
+| **Schematic** | Place from CSV |
 
-A sidebar rather than tabs: fourteen tab labels come to roughly 1900px of tab
+A sidebar rather than tabs: seventeen tab labels come to well over 2000px of tab
 row in a 900px window, a second row moves as the window resizes so you can
 never learn where anything is, and a scrolling row hides whatever is
 off-screen. A vertical list scales, keeps every name readable, and lets
@@ -75,6 +81,34 @@ Every batch is wrapped in `PreProcess`/`PostProcess` and each component edit in
 dangling edit transaction that blocks **File → Save** afterwards.
 
 ![After a JLCPCB export](docs/window-result.png)
+
+### Schematic: place components and nets from CSV
+
+**Schematic → Place from CSV** builds a sheet from two files, onto the
+schematic that has focus:
+
+| Input | Contents |
+| --- | --- |
+| components CSV | `Designator`, `LCSC` or `LibRef`, then optional `Library`, `X`, `Y`, `Rotation` (0/90/180/270), `Mirror`. X/Y are mil unless the header says mm (`X mm`). Rows with no position are laid out on a grid |
+| nets CSV | `Net,Designator,Pin` — or `Net,Node` with nodes like `R1.2`. A pin is matched by number first, then by name |
+
+Each connected pin gets a short wire stub pointing away from the part, with the
+net label on it — exact, never crosses a symbol, never makes an accidental
+connection. **Dry run** checks everything and changes nothing; **Place**
+writes `sch_placement.csv` and `sch_net_labels.csv` reports; **Schematic
+self-test** exercises the whole path in a scratch area off the sheet and removes
+what it added.
+
+Both CSVs are validated in full before anything is placed — duplicate
+designators, a pin listed in two nets (which would short them), bad rotations,
+half-given positions, unresolvable symbols, and designators already used on
+**another sheet of the project**. One error and nothing is placed. Designators
+already on the same sheet are left alone, so a second run places nothing new.
+Nothing is saved.
+
+Symbols come from a `.SchLib` — by default the shared library written by
+YouEDA, the author's EasyEDA/LCSC converter — or from a `Library` column. See
+[Where the LCSC part number comes from](#where-the-lcsc-part-number-comes-from).
 
 ### High-speed
 
@@ -239,6 +273,14 @@ That is the anchor, wherever pin 1 or the library origin happens to sit, and on
 plenty of footprints it is nowhere near the middle. Designators are switched to
 manual positioning first, or autoposition pulls them straight back.
 
+#### Placement
+
+**Off-board components** tests every component body against the board outline;
+**Component collisions** finds overlapping bodies pairwise. **Align rotation**
+and **Snap to grid** fix the selection. **Renumber designators** writes a
+proposal first and applies only when asked again — renumbering desynchronises
+the PCB from its schematic.
+
 #### Geometry
 
 **Fillet** rounds the corner between every pair of selected tracks sharing an
@@ -259,7 +301,13 @@ actual job, and without the vias the net breaks *silently* — the track still
 looks connected. Internal planes are refused: a plane is negative artwork, so a
 track dropped on one is a void, not a conductor.
 
-Also exports the stack as CSV and toggles signal-layer visibility.
+Also exports the stack as CSV, toggles signal-layer visibility, and maps which
+mechanical layers are in use.
+
+#### Polygons
+
+**Polygon report** lists every polygon with its settings and whether its copper
+is stale; **Repour** repours all of them, or only the stale ones.
 
 ### Variants
 
@@ -364,7 +412,9 @@ anything.
 ## Requirements
 
 - **Altium Designer 26** (this targets the .NET 8 SDK it ships; see below)
-- **.NET 8 SDK** — `winget install Microsoft.DotNet.SDK.8`
+- **.NET 8 SDK** — `winget install Microsoft.DotNet.SDK.8`. `global.json` pins
+  `8.0.425` and rolls forward within the 8.0 feature band, so a newer SDK on
+  the machine is ignored on purpose
 - Windows x64
 
 Altium 26 hosts **.NET 8 with WPF**, shipping its own runtime under
@@ -401,23 +451,21 @@ dotnet build -c Debug
 
 ## Test
 
-The via fence geometry has a standalone test harness. It compiles
-`FenceGeometry.cs` directly — the same file the plugin ships, not a copy — so
-the assertions cannot drift from what runs. `FenceGeometry.cs` references no
-Altium type, so the tests need no Altium installation and no SDK assemblies:
+Two layers: standalone harnesses for the logic, and a self-test inside Altium
+for everything that touches a document.
+
+### Harnesses (no Altium needed)
 
 ```powershell
-dotnet run --project tests/FenceGeometryTests
-dotnet run --project tests/ReleaseBundleTests
-dotnet run --project tests/Ipc2221Tests
-dotnet run --project tests/FilletGeometryTests
+foreach ($t in Get-ChildItem tests -Directory) { dotnet run --project $t.FullName }
 ```
 
 Each compiles the shipped source file directly — `FenceGeometry.cs`,
-`ReleaseBundle.cs`, `Ipc2221.cs`, `FilletGeometry.cs` — rather than a copy, so
-the assertions cannot drift from what runs. None of those files references an
-Altium or WPF type, which is what makes this possible: the tests need no Altium
-installation and no SDK assemblies.
+`ReleaseBundle.cs`, `Ipc2221.cs`, `FilletGeometry.cs`, `PolyGeometry.cs`,
+`SchPlacementPlan.cs` — rather than a copy, so the assertions cannot drift from
+what runs. None of those files references an Altium or WPF type, which is what
+makes this possible: the tests need no Altium installation and no SDK
+assemblies.
 
 That split is deliberate throughout. Wherever there is maths or file handling
 that can be wrong in a way you cannot see on screen, it lives in an
@@ -439,10 +487,37 @@ board work.
   from the centre across a sweep of angles and radii, the arc taken is always
   the minor one, degenerate corners refused with a reason, an oversized radius
   refused with a usable limit, and tangents never falling beyond their segment.
+- **PolyGeometryTests** — 74 assertions: point-in-outline on the cases that
+  break a naive crossing count (points level with a vertex or on an edge,
+  concave shapes, both winding orders, degenerate input), distance to an edge,
+  rectangle overlap, designator-prefix and row clustering for renumbering,
+  polygon area and arc length.
+- **SchPlacementTests** — 109 assertions: CSV parsing and every rejection,
+  a pin listed in two nets, automatic layout in natural designator order, the
+  YouEDA symbol-name rule, pin tips in all four directions, stub and label
+  geometry, pin matching by number then name, and designators already in use
+  on this sheet versus another sheet of the project.
 
-Exit code is 0 when they all pass.
+305 assertions in all. Exit code is 0 when they all pass.
 
-The rest needs a live board and was verified by hand (see **Status**).
+### Self-test (inside Altium)
+
+- **Reports → Self-test** (commands `AltiumSpike:SelfTest` and
+  `AltiumSpike:SelfTestFull`) runs every PCB function against the open board
+  and writes `spike_selftest.md`. The full run adds the board-modifying checks:
+  they build their own geometry in a clear area off the board, verify it, and
+  remove it; anything that touches a real object is recorded and restored.
+- **Schematic → Place from CSV → Schematic self-test** places a library symbol
+  at 0° and 90°, mirrored at 0° and at 90°, connects pins, checks every pin tip
+  and label by geometry, removes it all, and writes `spike_selftest_sch.md`.
+
+A check passes only when its result is compared against something independent
+— a count, a coordinate, a file read back. Run them on a scratch copy; nothing
+is ever saved, but the document is changed in memory while they run.
+
+`tools/SdkDump` prints the SDK assemblies' types and members from metadata,
+which is how every Altium call here was confirmed before being written. See
+[AGENTS.md](AGENTS.md) for how to work on this repo.
 
 ## Deploy
 
@@ -459,13 +534,15 @@ DXP/EDP build numbers already present so the entry is accepted.
 
 ```
 .\Deploy.ps1 -SkipBuild   # copy and register an existing build
-.\Deploy.ps1 -Force       # proceed even if Altium is running
 ```
 
-Altium can hold the DLL for up to ~90 seconds after exit; if the copy fails
-with a file lock, wait and re-run.
+`-Force` exists to proceed while Altium is running, but Altium holds the DLL
+open, so it rarely helps. Altium can also hold the DLL for up to ~90 seconds
+after exit; if the copy fails with a file lock, wait and re-run.
 
-Start Altium, open a `.PcbDoc`, then **PCB → Tools → AltiumSpike…**
+Altium loads extensions at startup, so **a new build needs an Altium restart**.
+Then open a `.PcbDoc` or `.SchDoc` and choose **AltiumSpike…** on the menu bar
+(after Help) or under **Tools**.
 
 ### Uninstalling
 
@@ -495,11 +572,24 @@ passed off as an LCSC number. Other spellings are tried as fallbacks, and every
 parameter name found on the board is written to the log so an unmatched field
 can be identified rather than guessed at.
 
+**Schematic placement** goes the other way: from an LCSC number in the CSV to a
+symbol in a library. The default library is the shared `youeda.SchLib` written
+by YouEDA, whose symbols are named from the EasyEDA component name (cleaned to
+`[A-Za-z0-9_+-.]`, runs of `_` collapsed, at most 120 characters), **not** from
+the LCSC number — that is only a hidden `LCSC Part` parameter. The mapping comes
+from the `family-classification.csv` files YouEDA writes next to the library,
+and every resolved name is then checked against the library's own component
+list. A row can bypass all of this with an explicit `LibRef`.
+
 ---
 
 ## Notes for anyone extending this
 
-Hard-won details that cost real time to establish:
+Hard-won details that cost real time to establish. The maintained list — each
+trap with what its wrong answer looks like — is the table in
+[AGENTS.md](AGENTS.md) §4; the schematic ones (a mirror flag that mirrors
+nothing, a cast that calls every sheet a library, a placement call that leaves
+the part selected) are recorded there.
 
 - **The factory type must be named `CSharpPlugin.PluginFactory`** — that exact
   fully-qualified name. Altium looks it up by name. Put it in your own
@@ -589,17 +679,28 @@ Verified against a real 2-layer board in Altium 26.8.1:
   passes format conformance.
 - All seven `objects.csv` types, pours, regions and lock/unlock placed
   correctly and were read back to confirm.
-- 122 automated assertions across four suites, all passing: via fence geometry
-  (35), release bundling (30), IPC-2221 current capacity (25), fillet geometry
-  (32).
+- The PCB self-test's last full run on that board: 37 passed, 5 failed, 2
+  skipped (no vias to check). Of the five failures, three were wrong assertions on a board that is not routed
+  (fixed: an unrouted board makes every routing-dependent result zero
+  legitimately); two are open and instrumented — polygon area measured from
+  the outline, and the stackup table's text.
+- **Schematic placement**, end to end: a 14-part, 47-pin test circuit placed
+  from CSV with all four rotations, a mirrored part, pins given by number, by
+  name and as `Des.Pin` nodes, and automatic layout — and the resulting netlist
+  identical, pin for pin, to one predicted offline from the same CSVs. The
+  compiler traces each net label through its stub to the pin; designator
+  clashes with other sheets of the project are refused. The schematic
+  self-test passed all 10 of its checks on its last run.
+- 305 automated assertions across six suites, all passing.
 
-Not yet exercised on a live board — built and deployed, verification pending:
-the stackup table, the assembly notes, the Output Job launch inside the release
-packager, and everything in the ten sections added most recently (via tools,
-copper & current, design rules, testpoints, cleanup, silkscreen, geometry,
-layers, variants, reports). Every one of those compiles against the real SDK
-and every Altium call in them was read out of assembly metadata rather than
-guessed, but that is not the same as having been run.
+Built and deployed, not yet run on a live board: the self-test checks for the
+four Import commands and for a part both mirrored and rotated; the Output Job
+launch inside the release packager; and the functions that have no self-test
+check yet (among them flip and scale, layer visibility, testpoint assignment,
+lock net routing, solder-mask barrel relief, and silkscreen centring and
+autoposition). Every one of those compiles against the real SDK and every
+Altium call in them was read out of assembly metadata rather than guessed, but
+that is not the same as having been run.
 
 Known rough edges:
 
@@ -614,6 +715,12 @@ Known rough edges:
   the generator.
 - The release packager's Output Job launch is unverified (see above); the
   packaging half is not.
+- Schematic placement places only the first part of a multi-part symbol, and
+  parts without a position are laid out on rows starting at Y = 1000 mil rather
+  than beside the positioned ones.
+- A library whose file header carries no symbol index (YouEDA's does not)
+  cannot have its symbol names checked before placing; a wrong name then fails
+  at placement and is reported there.
 - The UI is dark-themed to sit beside Altium's default theme.
 
 ---
