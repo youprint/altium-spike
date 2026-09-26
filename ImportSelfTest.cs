@@ -87,8 +87,16 @@ namespace AltiumSpike
                     int dA = Count(board, TObjectId.eArcObject) - arcs, dF = Count(board, TObjectId.eFillObject) - fills;
                     int dX = Count(board, TObjectId.eTextObject) - texts, dC = Count(board, TObjectId.eCoordinateObject) - coords;
                     if (dT != 1 || dV != 1 || dA != 1 || dF != 1 || dX != 1 || dC != 1)
+                    {
+                        string extra = "";
+                        // Two misses, then instrument (AGENTS.md #5): the first
+                        // run found text +2 where +1 was expected. Rather than
+                        // guess why, list what is actually sitting in the strip
+                        // so the next run says which object it is.
+                        if (dX != 1) extra = "; text objects in the strip: " + ListTexts(board, ox + 118, oy - 38, ox + 195, oy - 2);
                         bad.Add("census moved by track " + dT + ", via " + dV + ", arc " + dA + ", fill " + dF +
-                                ", text " + dX + ", coordinate " + dC + " -- expected +1 each");
+                                ", text " + dX + ", coordinate " + dC + " -- expected +1 each" + extra);
+                    }
 
                     // Geometry, read back: the track's ends, and the fill's
                     // extent -- the fill is the one whose API names mislead.
@@ -257,6 +265,36 @@ namespace AltiumSpike
             string path = Path.Combine(folder, name);
             File.WriteAllLines(path, rows, new UTF8Encoding(false));
             return path;
+        }
+
+        // Lists every text object wholly inside the rectangle (mm), with its
+        // content and position -- instrumentation for a census mismatch, not
+        // a normal-path helper.
+        private static string ListTexts(IPCB_Board board, double x1, double y1, double x2, double y2)
+        {
+            List<string> found = new List<string>();
+            IPCB_BoardIterator it = board.BoardIterator_Create();
+            try
+            {
+                it.AddFilter_ObjectSet(new TObjectSet(TObjectId.eTextObject));
+                it.AddFilter_AllLayers();
+                it.AddFilter_Method(TIterationMethod.eProcessAll);
+                IPCB_Text t = it.FirstPCBObject() as IPCB_Text;
+                while (t != null)
+                {
+                    try
+                    {
+                        double tx = ToMM(t.GetState_XLocation()), ty = ToMM(t.GetState_YLocation());
+                        if (tx >= x1 && tx <= x2 && ty >= y1 && ty <= y2)
+                            found.Add("\"" + (t.GetState_Text() ?? "") + "\" at " + F3(tx) + "," + F3(ty));
+                    }
+                    catch { }
+                    t = it.NextPCBObject() as IPCB_Text;
+                }
+            }
+            catch { }
+            finally { board.BoardIterator_Destroy(ref it); }
+            return found.Count == 0 ? "(none found)" : string.Join(" | ", found.ToArray());
         }
 
         private static bool TrackAt(IPCB_Board board, double x1, double y1, double x2, double y2)

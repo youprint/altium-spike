@@ -462,13 +462,19 @@ namespace AltiumSpike
                 if (x.NetsReported == 0)
                 {
                     // Nothing rated is only this function's fault if there was
-                    // netted copper for it to rate.
-                    if (x.SkippedNoNet >= tracks)
-                        return "PASS: nothing rated, correctly — all " + x.SkippedNoNet + " copper " +
-                               "primitive(s) carry no net, and capacity is reported per net. The result " +
-                               "now says so instead of writing an empty CSV";
+                    // netted copper for it to rate. SkippedNoNet + SkippedOffCopper
+                    // together account for every track/arc scanned; the same
+                    // "unrouted board makes every routing-dependent result zero
+                    // legitimately" rule as "Is this board routed" applies here.
+                    int scanned = x.SkippedNoNet + x.SkippedOffCopper;
+                    if (x.SkippedOffCopper >= tracks || x.SkippedNoNet >= tracks)
+                        return "PASS: nothing rated, correctly — all " + tracks + " track(s) are off-copper " +
+                               "(" + x.SkippedOffCopper + ") or carry no net (" + x.SkippedNoNet + "), and " +
+                               "capacity is reported per net. The result now says so instead of writing an " +
+                               "empty CSV";
                     return "FAIL: " + tracks + " tracks on the board but no nets were rated (" +
-                           x.SkippedNoNet + " unnetted, " + x.SkippedOffCopper + " off-copper)";
+                           x.SkippedNoNet + " unnetted, " + x.SkippedOffCopper + " off-copper, " +
+                           scanned + " total accounted for)";
                 }
 
                 // Independent arithmetic check against the shipped formula.

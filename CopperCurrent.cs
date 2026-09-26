@@ -476,13 +476,30 @@ namespace AltiumSpike
                             catch (Exception pex) { why = pex.GetType().Name + ": " + pex.Message; }
 
                             // Two guesses at this have already been wrong, so
-                            // the reason is recorded rather than inferred.
+                            // the reason is recorded rather than inferred. The
+                            // record paid off: on SpikeTest (2026-09-26 12:05)
+                            // GetState_PointCount itself threw "Interface not
+                            // supported" on the iterated polygon, while the
+                            // same call works on the board outline.
                             if (px.Count == 0)
                                 res.Errors.Add("Polygon outline walk got " + px.Count + " vertices from a " +
                                                "declared PointCount of " + declared +
                                                (why.Length > 0 ? " (" + why + ")" : " (no exception)"));
 
                             areaMM2 = PolyGeometry.PolygonArea(px, py);
+
+                            if (areaMM2 <= 0)
+                            {
+                                // No outline: measure the poured copper itself
+                                // -- the regions the pour is made of, each
+                                // from its contour less its holes. That is
+                                // the real filled area, not the boundary.
+                                string pieces;
+                                areaMM2 = PouredArea(poly, out pieces);
+                                if (areaMM2 > 0) kind = "Polygon (poured copper)";
+                                res.Errors.Add("Polygon " + PolyName(poly) + " on " + layer + ": poured copper " +
+                                               areaMM2.ToString("0.00", Inv) + " mm2 from " + pieces);
+                            }
 
                             if (areaMM2 <= 0)
                             {
@@ -569,6 +586,70 @@ namespace AltiumSpike
             }
 
             return res;
+        }
+
+        // The copper a pour actually holds: the sum of its child regions,
+        // each measured from its main contour less its holes. `pieces` says
+        // what the group held, so a hatched pour (tracks, no regions) or an
+        // unpoured one (nothing) reads as that, not as a mystery zero.
+        private static double PouredArea(IPCB_Polygon poly, out string pieces)
+        {
+            double area = 0.0;
+            int regions = 0, others = 0, points = 0;
+            string why = "";
+            IPCB_GroupIterator gi = null;
+            try
+            {
+                gi = poly.GroupIterator_Create();
+                gi.AddFilter_ObjectSet(new TObjectSet(new TObjectId[] { TObjectId.eRegionObject, TObjectId.eTrackObject }));
+                gi.AddFilter_AllLayers();
+                IPCB_Primitive c = gi.FirstPCBObject();
+                while (c != null)
+                {
+                    IPCB_Region rg = c as IPCB_Region;
+                    if (rg == null) others++;
+                    else
+                    {
+                        regions++;
+                        IPCB_Contour main = rg.GetMainContour();
+                        points += main.GetState_Count();
+                        double a = ContourArea(main);
+                        int holes = rg.GetHoleCount();
+                        for (int h = 0; h < holes; h++) a -= ContourArea(rg.GetHole(h));
+                        if (a > 0) area += a;
+                    }
+                    c = gi.NextPCBObject();
+                }
+            }
+            catch (Exception ex) { why = "; walk stopped: " + ex.GetType().Name + ": " + ex.Message; }
+            finally
+            {
+                if (gi != null) try { poly.GroupIterator_Destroy(ref gi); } catch { }
+            }
+
+            pieces = regions + " region(s) (" + points + " contour points) and " + others +
+                     " other piece(s)" + why;
+            return area;
+        }
+
+        private static double ContourArea(IPCB_Contour k)
+        {
+            if (k == null) return 0.0;
+            int n = k.GetState_Count();
+            List<double> xs = new List<double>(n), ys = new List<double>(n);
+            for (int i = 0; i < n; i++)
+            {
+                xs.Add(ToMM(k.GetState_PointX(i)));
+                ys.Add(ToMM(k.GetState_PointY(i)));
+            }
+            return PolyGeometry.PolygonArea(xs, ys);
+        }
+
+        private static string PolyName(IPCB_Polygon poly)
+        {
+            string name = "";
+            try { name = poly.GetState_Name() ?? ""; } catch { }
+            return name.Length > 0 ? "'" + name + "'" : "(unnamed)";
         }
     }
 }
